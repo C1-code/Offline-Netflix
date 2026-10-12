@@ -186,6 +186,18 @@ const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(set
 const GOOD_VCODECS = ['h264', 'hevc', 'vp8', 'vp9', 'av1', 'mpeg4', 'mpeg2video'];
 const GOOD_ACODECS = ['aac', 'mp3', 'mp2', 'opus', 'flac', 'vorbis', 'alac', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_f32le'];
 
+// native: browser decodes everything; mse: video passthrough + AAC audio remux
+// (only H.264 video — mpegts.js can't demux HEVC-in-TS); transcode: full CPU
+// re-encode to H.264/AAC for anything else (e.g. HEVC + E-AC3).
+function pickMode(file) {
+  const v = file.vcodec || '', a = file.acodec || '';
+  const audioOK = GOOD_ACODECS.includes(a);
+  const videoOK = GOOD_VCODECS.includes(v);
+  if (audioOK && videoOK) return 'native';
+  if (videoOK && v === 'h264') return 'mse';
+  return 'transcode';
+}
+
 const displayTime = () => video().currentTime + (P && P.mode !== 'native' && P.timeOffset ? P.timeOffset : 0);
 
 function hideMenus() {
@@ -240,8 +252,7 @@ async function openWatch(fileId) {
   $('#btn-speed').innerHTML = settings.rate + '&times;';
   $('#subsbox').className = 'sub-' + settings.subSize;
 
-  const canNative = GOOD_VCODECS.includes(d.file.vcodec || '') && GOOD_ACODECS.includes(d.file.acodec || '');
-  P.mode = canNative ? 'native' : 'mse';
+  P.mode = pickMode(d.file);
   attachPlayback(initialStart());
   v.addEventListener('ended', onEnded);
   v.addEventListener('timeupdate', updateSeekUI);
@@ -543,7 +554,7 @@ $('#btn-fs').addEventListener('click', toggleFs);
 $('#btn-compat').addEventListener('click', () => {
   if (!P) return;
   const wasCompat = P.mode === 'transcode';
-  P.mode = wasCompat ? (GOOD_ACODECS.includes(P.data.file.acodec || '') ? 'native' : 'mse') : 'transcode';
+  P.mode = wasCompat ? pickMode(P.data.file) : 'transcode';
   $('#btn-compat').classList.toggle('on', P.mode === 'transcode');
   attachPlayback(Math.floor(displayTime()));
   flashSubs(P.mode === 'transcode' ? 'Compat: full GPU re-encode (heavy)' : P.mode === 'mse' ? 'Smart mode: original video + AAC audio' : 'Direct play');

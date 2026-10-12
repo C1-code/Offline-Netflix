@@ -150,7 +150,7 @@ function transcodeStream(req, res, f, start = 0) {
   }
   const args = [];
   if (start > 0) args.push('-ss', String(start));
-  args.push('-i', f.path, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23',
+  args.push('-i', f.path, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
     '-c:a', 'aac', '-b:a', '256k', '-movflags', 'frag_keyframe+empty_moov',
     '-f', 'mp4', 'pipe:1');
   res.writeHead(200, {
