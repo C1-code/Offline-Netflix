@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Offlineflix</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div id="logo" title="Offlineflix">OFFLINEFLIX</div>
+  <div id="navback" hidden>&#8592; Back</div>
+  <div class="spacer"></div>
+  <div id="searchwrap"><input id="search" placeholder="Search" autocomplete="off" spellcheck="false"></div>
+</header>
+
+<main id="view"></main>
+
+<div id="player" hidden>
+  <video id="video"></video>
+  <div id="subsflash"></div>
+  <div id="controls">
+    <div id="seekwrap">
+      <input id="seek" type="range" min="0" max="1000" value="0" step="1">
+      <div id="seenbar"></div>
+    </div>
+    <div id="ctlrow">
+      <button id="btn-back" class="ctl" title="Back (Esc)">&#8592;</button>
+      <button id="btn-play" class="ctl" title="Play/Pause (Space)">&#9654;</button>
+      <button id="btn-next" class="ctl" title="Next episode (N)" hidden>&#9197;</button>
+      <span id="timecur">0:00</span>
+      <span class="grow"></span>
+      <span id="substatus"></span>
+      <button id="btn-subs" class="ctl" title="Subtitles">CC</button>
+      <button id="btn-compat" class="ctl" title="Compatibility mode (re-encode via GPU if video won't play)">Compa&hellip;</button>
+      <button id="btn-fs" class="ctl" title="Fullscreen (F)">&#x26F6;</button>
+      <span id="timetot">0:00</span>
+    </div>
+  </div>
+  <div id="subsmenu" hidden></div>
+  <div id="nextoverlay" hidden>
+    <div id="nextbox">
+      <div id="nextlabel">Up next</div>
+      <div id="nextname"></div>
+      <button id="btn-startnext" class="bigbtn">Play now</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

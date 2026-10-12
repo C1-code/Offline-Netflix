@@ -1,0 +1,20 @@
+{
+  "name": "offline-netflix",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Netflix-style frontend for your local media library",
+  "scripts": {
+    "start": "node server.js",
+    "scan": "node tools/scan.mjs",
+    "subs": "node tools/subs-all.mjs",
+    "rename:dry": "node tools/rename.mjs --dry-run",
+    "rename:apply": "node tools/rename.mjs --apply",
+    "tmdb:sync": "node tools/tmdb-sync.mjs",
+    "thumbs": "node tools/thumbs.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "express": "^4.21.2"
+  }
+}
