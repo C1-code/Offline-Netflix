@@ -114,10 +114,9 @@ export function applyPlan(plan) {
       fs.renameSync(m.from, m.to);
       if (m.type === 'file') {
         setFilePath.run(m.to, m.id);
-      } else {
-        const f = q.fileByPath.get(m.from);
-        if (f) fixSubPath.run(m.to, f.id, m.from);
       }
+      // companion/subtrack paths: repoint any DB row that referenced the old path
+      db.prepare(`UPDATE subtracks SET path=? WHERE path=?`).run(m.to, m.from);
       log.run(m.from, m.to);
       applied++;
     } catch (e) {

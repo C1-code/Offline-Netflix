@@ -14,7 +14,8 @@ export async function probeVideo(file) {
     '-show_format', '-show_streams', file
   ]);
   const j = JSON.parse(out);
-  const v = j.streams?.find((s) => s.codec_type === 'video') || {};
+  const v = j.streams?.find((s) => s.codec_type === 'video' && s.codec_name !== 'mjpeg') || {};
+  const a = j.streams?.find((s) => s.codec_type === 'audio') || {};
   const subtitles = (j.streams || [])
     .filter((s) => s.codec_type === 'subtitle')
     .map((s) => ({
@@ -27,6 +28,8 @@ export async function probeVideo(file) {
     duration: parseFloat(j.format?.duration) || null,
     width: v.width || null,
     height: v.height || null,
+    vcodec: v.codec_name || null,
+    acodec: a.codec_name || null,
     subtitles
   };
 }

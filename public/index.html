@@ -18,11 +18,12 @@
 
 <div id="player" hidden>
   <video id="video"></video>
+  <div id="subsbox" class="sub-md"></div>
+  <div id="nowplaying"></div>
   <div id="subsflash"></div>
   <div id="controls">
     <div id="seekwrap">
       <input id="seek" type="range" min="0" max="1000" value="0" step="1">
-      <div id="seenbar"></div>
     </div>
     <div id="ctlrow">
       <button id="btn-back" class="ctl" title="Back (Esc)">&#8592;</button>
@@ -30,14 +31,19 @@
       <button id="btn-next" class="ctl" title="Next episode (N)" hidden>&#9197;</button>
       <span id="timecur">0:00</span>
       <span class="grow"></span>
-      <span id="substatus"></span>
-      <button id="btn-subs" class="ctl" title="Subtitles">CC</button>
-      <button id="btn-compat" class="ctl" title="Compatibility mode (re-encode via GPU if video won't play)">Compa&hellip;</button>
+      <button id="btn-mute" class="ctl" title="Mute (M)">&#128266;</button>
+      <input id="vol" type="range" min="0" max="100" value="100" title="Volume">
+      <button id="btn-subs" class="ctl" title="Subtitles (C)">CC</button>
+      <button id="btn-speed" class="ctl" title="Playback speed">1&times;</button>
+      <button id="btn-eps" class="ctl" title="Episodes">&#9776;</button>
+      <button id="btn-compat" class="ctl" title="Compatibility mode (re-encode via GPU)">Compat</button>
       <button id="btn-fs" class="ctl" title="Fullscreen (F)">&#x26F6;</button>
       <span id="timetot">0:00</span>
     </div>
   </div>
   <div id="subsmenu" hidden></div>
+  <div id="speedmenu" hidden></div>
+  <div id="epspanel" hidden></div>
   <div id="nextoverlay" hidden>
     <div id="nextbox">
       <div id="nextlabel">Up next</div>
@@ -47,6 +53,7 @@
   </div>
 </div>
 
+<script src="vendor/mpegts.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

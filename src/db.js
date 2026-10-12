@@ -6,6 +6,13 @@ db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
 
+
+// --- lightweight migrations ---
+{
+  const cols = db.prepare(`PRAGMA table_info(files)`).all().map((c) => c.name);
+  if (!cols.includes('vcodec')) db.exec(`ALTER TABLE files ADD COLUMN vcodec TEXT`);
+  if (!cols.includes('acodec')) db.exec(`ALTER TABLE files ADD COLUMN acodec TEXT`);
+}
 db.exec(`
 CREATE TABLE IF NOT EXISTS titles (
   id INTEGER PRIMARY KEY,
@@ -94,7 +101,7 @@ export const q = {
   fileByPath: db.prepare(`SELECT * FROM files WHERE path = ?`),
   fileById: db.prepare(`SELECT * FROM files WHERE id = ?`),
   insertFile: db.prepare(`INSERT INTO files (title_id, path, filename, ext, size, kind, season, episode, ep_name) VALUES (@title_id,@path,@filename,@ext,@size,@kind,@season,@episode,@ep_name)`),
-  updateFileProbe: db.prepare(`UPDATE files SET duration=@duration, width=@width, height=@height, probe_done=1 WHERE id=@id`),
+  updateFileProbe: db.prepare(`UPDATE files SET duration=@duration, width=@width, height=@height, vcodec=@vcodec, acodec=@acodec, probe_done=1 WHERE id=@id`),
   updateEpMeta: db.prepare(`UPDATE files SET ep_name=@ep_name, ep_overview=@ep_overview, ep_still=@ep_still WHERE id=@id`),
   setThumb: db.prepare(`UPDATE files SET thumb=@thumb WHERE id=@id`),
   deleteFile: db.prepare(`DELETE FROM files WHERE id = ?`),

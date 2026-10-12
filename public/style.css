@@ -147,3 +147,29 @@ img { display: block; }
 /* the hidden attribute must win over display:flex on these overlays */
 #nextoverlay[hidden] { display: none; }
 #subsmenu[hidden] { display: none; }
+
+/* ---- custom subtitle overlay ---- */
+#subsbox { position: absolute; left: 0; right: 0; bottom: 74px; display: flex;
+  justify-content: center; pointer-events: none; z-index: 4; text-align: center;
+  font-weight: 600; line-height: 1.35; }
+#subsbox:empty { display: none; }
+#subsbox span { background: rgba(8,8,8,.72); padding: .12em .38em; border-radius: 5px; }
+#subsbox { font-size: 26px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.9); }
+.sub-sm { font-size: 19px !important; }
+.sub-md { font-size: 26px !important; }
+.sub-lg { font-size: 36px !important; }
+
+#nowplaying { position: absolute; top: 20px; left: 28px; z-index: 4; font-size: 17px;
+  text-shadow: 0 2px 10px rgba(0,0,0,.8); transition: opacity .25s; }
+#nowplaying.hidden { opacity: 0; }
+#nowplaying span { color: #cfcfd6; font-size: 14px; }
+
+#vol { width: 90px; accent-color: #fff; height: 4px; }
+
+#speedmenu, #epspanel { position: absolute; right: 24px; bottom: 84px; background: rgba(18,18,24,.96);
+  border: 1px solid #2e2e3a; border-radius: var(--radius); padding: 8px; min-width: 250px;
+  max-height: 70vh; overflow-y: auto; z-index: 5; }
+#epspanel { left: 24px; right: auto; }
+.menusec { color: var(--dim); font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+  padding: 8px 14px 4px; }
+.menusec:not(:first-child) { border-top: 1px solid #26262f; margin-top: 6px; }

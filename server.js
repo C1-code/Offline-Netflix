@@ -85,6 +85,7 @@ app.get('/api/file/:id', (req, res) => {
     file: {
       id: f.id, kind: f.kind, season: f.season, episode: f.episode,
       epName: f.ep_name, epOverview: f.ep_overview, duration: f.duration || p?.duration || 0,
+      vcodec: f.vcodec, acodec: f.acodec,
       still: imgUrl(f.ep_still) || (f.thumb ? `/thumb/${f.id}` : null)
     },
     title: { id: t.id, name: t.name, year: t.year, backdrop: imgUrl(t.backdrop), poster: imgUrl(t.poster) },
@@ -142,11 +143,11 @@ app.post('/api/scan', async (req, res) => {
 
 // ---------- Video streaming ----------
 
-function transcodeStream(req, res, f) {
-  const size = fs.statSync(f.path).size;
-  let start = 0;
-  const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
-  if (m && m[1]) start = +m[1];
+function transcodeStream(req, res, f, start = 0) {
+  if (!start) {
+    const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
+    if (m && m[1]) start = +m[1];
+  }
   const args = [];
   if (start > 0) args.push('-ss', String(start));
   args.push('-i', f.path, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23',
@@ -163,10 +164,31 @@ function transcodeStream(req, res, f) {
   res.on('close', kill);
 }
 
+// Audio-only transcode (video untouched) for codecs browsers can't decode
+// (E-AC3, DTS, TrueHD, PCM). Streamed as MPEG-TS for MSE playback.
+function mseAudioStream(req, res, f, start = 0) {
+  const args = [];
+  if (start > 0) args.push('-ss', String(start));
+  args.push('-i', f.path, '-map', '0:v:0', '-map', '0:a:0',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '384k',
+    '-mpegts_flags', 'resend_headers', '-f', 'mpegts', 'pipe:1');
+  res.writeHead(200, {
+    'Content-Type': 'video/mp2t', 'Accept-Ranges': 'none',
+    'X-Playback-Mode': 'mse-audio', 'Cache-Control': 'no-store'
+  });
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+  proc.stdout.pipe(res);
+  const kill = () => { try { proc.kill('SIGKILL'); } catch {} };
+  req.on('close', kill);
+  res.on('close', kill);
+}
+
 app.get('/stream/:fileId', (req, res) => {
   const f = q.fileById.get(+req.params.fileId);
   if (!f || !fs.existsSync(f.path)) return res.status(404).end();
-  if (req.query.transcode === '1' && cfg.transcodeEnabled) return transcodeStream(req, res, f);
+  const start = Math.max(0, +req.query.start || 0);
+  if (req.query.audio === '1' && cfg.transcodeEnabled) return mseAudioStream(req, res, f, start);
+  if (req.query.transcode === '1' && cfg.transcodeEnabled) return transcodeStream(req, res, f, start);
 
   const size = fs.statSync(f.path).size;
   const type = MIME[path.extname(f.path).toLowerCase()] || 'application/octet-stream';
