@@ -186,19 +186,36 @@ const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(set
 const GOOD_VCODECS = ['h264', 'hevc', 'vp8', 'vp9', 'av1', 'mpeg4', 'mpeg2video'];
 const GOOD_ACODECS = ['aac', 'mp3', 'mp2', 'opus', 'flac', 'vorbis', 'alac', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_f32le'];
 
-// native: browser decodes everything; mse: video passthrough + AAC audio remux
-// (only H.264 video — mpegts.js can't demux HEVC-in-TS); transcode: full CPU
-// re-encode to H.264/AAC for anything else (e.g. HEVC + E-AC3).
-function pickMode(file) {
-  const v = file.vcodec || '', a = file.acodec || '';
-  const audioOK = GOOD_ACODECS.includes(a);
-  const videoOK = GOOD_VCODECS.includes(v);
-  if (audioOK && videoOK) return 'native';
-  if (videoOK && v === 'h264') return 'mse';
-  return 'transcode';
+const displayTime = () => video().currentTime + (P && P.mode !== 'native' && P.timeOffset ? P.timeOffset : 0);
+
+// Learned modes: which playback mode actually worked per codec combo.
+const MODE_LEARN_KEY = 'oflix-mode-learn';
+function learnMap() { try { return JSON.parse(localStorage.getItem(MODE_LEARN_KEY) || '{}'); } catch { return {}; } }
+function learnMode(file, mode) {
+  const m = learnMap();
+  const k = (file.vcodec || '') + '|' + (file.acodec || '');
+  if (m[k] !== mode) { m[k] = mode; localStorage.setItem(MODE_LEARN_KEY, JSON.stringify(m)); }
 }
 
-const displayTime = () => video().currentTime + (P && P.mode !== 'native' && P.timeOffset ? P.timeOffset : 0);
+function msOK(codecStr) {
+  try { return !!window.MediaSource && !!codecStr && MediaSource.isTypeSupported('video/mp4; codecs="' + codecStr + '"'); }
+  catch { return false; }
+}
+
+// Mode preference order, capability-driven:
+//   native   — browser decodes the file as-is
+//   remux    — video passthrough (fMP4+MSE), audio copied or -> AAC
+//   transcode— full CPU re-encode to H.264/AAC
+function modeChain(file) {
+  const v = file.vcodec || '', a = file.acodec || '';
+  const learned = learnMap()[v + '|' + a];
+  let first = null;
+  if (learned) first = learned;
+  else if (GOOD_ACODECS.includes(a) && GOOD_VCODECS.includes(v)) first = 'native';
+  else if (GOOD_VCODECS.includes(v) && msOK(file.vcodec_str) && msOK('mp4a.40.2')) first = 'remux';
+  else first = 'transcode';
+  return [first, ...['native', 'remux', 'transcode'].filter((m) => m !== first)];
+}
 
 function hideMenus() {
   $('#subsmenu').hidden = true;
@@ -211,6 +228,7 @@ function closePlayer() {
   saveProgressNow();
   clearInterval(P.saveTimer);
   clearInterval(P.nextTimer);
+  clearTimeout(P.watchdog);
   destroyMSE();
   const v = video();
   v.pause();
@@ -225,7 +243,7 @@ function closePlayer() {
 
 function destroyMSE() {
   if (P && P.mse) {
-    try { P.mse.pause(); P.mse.unload(); } catch {}
+    try { P.mse.stop(); } catch {}
     P.mse = null;
   }
 }
@@ -239,8 +257,10 @@ function initialStart() {
 async function openWatch(fileId) {
   const d = await j('/api/file/' + fileId);
   if (P) closePlayer();
-  P = { fileId, data: d, saveTimer: null, nextTimer: null, mode: 'native', mse: null,
+  P = { fileId, data: d, saveTimer: null, nextTimer: null, watchdog: null,
+        modes: modeChain(d.file), modeIdx: 0, mode: null, mse: null,
         timeOffset: 0, cues: null, activeSub: -2, lastCue: undefined, subCache: {} };
+  P.mode = P.modes[0];
   $('#player').hidden = false;
   hideMenus();
   $('#nextoverlay').hidden = true;
@@ -251,8 +271,6 @@ async function openWatch(fileId) {
   $('#vol').value = Math.round(settings.volume * 100);
   $('#btn-speed').innerHTML = settings.rate + '&times;';
   $('#subsbox').className = 'sub-' + settings.subSize;
-
-  P.mode = pickMode(d.file);
   attachPlayback(initialStart());
   v.addEventListener('ended', onEnded);
   v.addEventListener('timeupdate', updateSeekUI);
@@ -266,26 +284,53 @@ function attachPlayback(startAt) {
   destroyMSE();
   const v = video();
   const resume = startAt || 0;
+  const f = P.data.file;
   if (P.mode === 'native') {
+    P.timeOffset = 0;
     v.src = `/stream/${P.fileId}`;
     v.addEventListener('loadedmetadata', () => {
       if (resume > 0) v.currentTime = resume;
       v.play().catch(() => {});
     }, { once: true });
-    P.timeOffset = 0;
-  } else if (P.mode === 'mse') {
-    const url = `/stream/${P.fileId}?audio=1` + (resume ? `&start=${resume}` : '');
+  } else if (P.mode === 'remux') {
     P.timeOffset = resume;
-    P.mse = mpegts.createPlayer({ type: 'mpegts', url, isLive: false },
-      { enableStashBuffer: false, autoCleanupSourceBuffer: true });
-    P.mse.attachMediaElement(v);
-    P.mse.load();
+    const acopy = msOK(f.acodec_str) && ['eac3', 'ac3', 'mp3'].includes(f.acodec || '') ? 1 : 0;
+    const codecs = acopy ? `${f.vcodec_str},${f.acodec_str}` : `${f.vcodec_str},mp4a.40.2`;
+    const url = `/stream/${P.fileId}?audio=1${acopy ? '&acopy=1' : ''}${resume ? `&start=${resume}` : ''}`;
+    P.mse = new Fmp4MsePlayer(v, url, codecs, (e) => playbackFailed('MSE: ' + (e?.message || e)));
+    P.mse.start();
     v.play().catch(() => {});
-  } else { // full transcode (compat)
-    v.src = `/stream/${P.fileId}?transcode=1` + (resume ? `&start=${resume}` : '');
+  } else { // transcode
     P.timeOffset = resume;
+    v.src = `/stream/${P.fileId}?transcode=1${resume ? `&start=${resume}` : ''}`;
     v.addEventListener('loadedmetadata', () => { v.play().catch(() => {}); }, { once: true });
   }
+  armWatchdog();
+}
+
+// If a mode produces nothing, fall through to the next one automatically.
+function armWatchdog() {
+  clearTimeout(P.watchdog);
+  P.watchdog = setTimeout(() => {
+    if (P && video().readyState < 2) playbackFailed('no media data in 12s');
+  }, 12000);
+}
+
+function playbackFailed(reason) {
+  if (!P || P.failing) return;
+  P.failing = true;
+  console.warn('[playback] mode', P.mode, 'failed:', reason);
+  P.modeIdx += 1;
+  if (P.modeIdx >= P.modes.length) {
+    $('#nowplaying').textContent = 'No playback mode worked for this file (see server.log)';
+    showControls();
+    return;
+  }
+  P.mode = P.modes[P.modeIdx];
+  P.failing = false;
+  P.lastCue = undefined;
+  flashSubs('Switching to ' + P.mode + ' playback…');
+  attachPlayback(Math.max(0, Math.floor(displayTime())));
 }
 
 function renderNowPlaying() {
@@ -297,7 +342,94 @@ function renderNowPlaying() {
       : '');
 }
 
-// ---------- custom subtitle renderer (works in native + MSE modes) ----------
+// ---------- fMP4 over MSE (video passthrough remux) ----------
+
+class Fmp4MsePlayer {
+  constructor(video, url, codecs, onError) {
+    this.video = video; this.url = url; this.codecs = codecs; this.onError = onError;
+    this.stopped = false; this.mse = null; this.sb = null; this.reader = null;
+  }
+  start() {
+    (async () => {
+      try {
+        this.mse = new MediaSource();
+        this.objUrl = URL.createObjectURL(this.mse);
+        this.video.src = this.objUrl;
+        await this.once(this.mse, 'sourceopen', 5000);
+        this.sb = this.mse.addSourceBuffer('video/mp4; codecs="' + this.codecs + '"');
+        this.sb.mode = 'sequence';
+        const res = await fetch(this.url);
+        if (!res.ok || !res.body) throw new Error('stream HTTP ' + res.status);
+        this.reader = res.body.getReader();
+        await this.pump();
+        if (!this.stopped) { try { this.mse.endOfStream(); } catch {} }
+      } catch (e) { if (!this.stopped) this.fail(e); }
+    })();
+  }
+  once(target, ev, timeout) {
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, timeout);
+      target.addEventListener(ev, () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+  }
+  fail(e) { if (this.stopped) return; this.stopped = true; if (this.onError) this.onError(e); }
+  stop() {
+    this.stopped = true;
+    try { this.reader && this.reader.cancel(); } catch {}
+    try { this.mse && this.mse.readyState !== 'closed' && this.mse.endOfStream(); } catch {}
+    try { this.objUrl && URL.revokeObjectURL(this.objUrl); } catch {}
+  }
+  bufferedAhead() {
+    const v = this.video;
+    let end = 0;
+    for (let i = 0; i < v.buffered.length; i++) if (v.buffered.end(i) > end) end = v.buffered.end(i);
+    return end - v.currentTime;
+  }
+  append(buf) {
+    return new Promise((resolve) => {
+      const sb = this.sb;
+      const cleanup = () => { sb.removeEventListener('updateend', done); sb.removeEventListener('error', err); };
+      const done = () => { cleanup(); resolve(); };
+      const err = () => { cleanup(); this.fail(new Error('MSE append failed')); };
+      sb.addEventListener('updateend', done, { once: true });
+      sb.addEventListener('error', err, { once: true });
+      try { sb.appendBuffer(buf); } catch (e) { cleanup(); this.fail(e); }
+    });
+  }
+  async pump() {
+    const concat = (a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; };
+    let acc = new Uint8Array(0), init = [], initDone = false, seg = [], stopped = () => this.stopped;
+    for (;;) {
+      if (stopped()) return;
+      if (this.bufferedAhead() > 30) { await new Promise((r) => setTimeout(r, 250)); continue; }
+      const { value, done } = await this.reader.read();
+      if (value && value.length) acc = concat(acc, value);
+      let progressed = true;
+      while (progressed && acc.length >= 8) {
+        progressed = false;
+        const size = ((acc[0] << 24) | (acc[1] << 16) | (acc[2] << 8) | acc[3]) >>> 0;
+        const type = String.fromCharCode(acc[4], acc[5], acc[6], acc[7]);
+        if (size === 0 || acc.length < size) break;
+        const box = acc.slice(0, size);
+        acc = acc.slice(size);
+        progressed = true;
+        if (!initDone) {
+          init.push(box);
+          if (type === 'moov') { initDone = true; await this.append(init); init = []; }
+        } else if (type === 'moof') {
+          if (seg.length) await this.append(seg);
+          seg = [box];
+        } else if (seg.length) {
+          seg.push(box);
+          if (type === 'mdat') { await this.append(seg); seg = []; }
+        }
+      }
+      if (done) { if (seg.length) await this.append(seg); break; }
+    }
+  }
+}
+
+// ---------- custom subtitle renderer ----------
 
 function parseVTT(text) {
   const cues = [];
@@ -417,15 +549,19 @@ $('#player').addEventListener('touchstart', showControls);
 $('#btn-play').addEventListener('click', () => { const v = video(); v.paused ? v.play() : v.pause(); showControls(); });
 video().addEventListener('play', () => { $('#btn-play').innerHTML = '&#10074;&#10074;'; showControls(); });
 video().addEventListener('pause', () => { $('#btn-play').innerHTML = '&#9654;'; });
-video().addEventListener('error', () => { if (P) { $('#nowplaying').textContent = 'playback error — try Compat mode'; showControls(); } });
+video().addEventListener('playing', () => {
+  clearTimeout(P?.watchdog);            // data is flowing — cancel the fallback watchdog
+  if (P) learnMode(P.data.file, P.mode);
+});
+video().addEventListener('error', () => {
+  if (P) playbackFailed('media error ' + (video().error?.code || ''));
+});
 
-// seek
 $('#seek').addEventListener('input', (e) => {
   const v = video();
   if (!v.duration) return;
   const target = (e.target.value / 1000) * v.duration;
-  if (P && P.mode === 'mse') {
-    v.currentTime = 0;                      // stream restarts at the target
+  if (P && P.mode !== 'native') {       // remux/transcode: restart the stream at the target
     attachPlayback(Math.max(0, Math.floor(target)));
   } else {
     v.currentTime = target;
@@ -433,7 +569,6 @@ $('#seek').addEventListener('input', (e) => {
   showControls();
 });
 
-// volume
 function setVolume(vol, muted) {
   settings.volume = vol; settings.muted = muted;
   const v = video();
@@ -445,7 +580,6 @@ function setVolume(vol, muted) {
 $('#vol').addEventListener('input', (e) => setVolume(e.target.value / 100, false));
 $('#btn-mute').addEventListener('click', () => setVolume(settings.volume, !settings.muted));
 
-// subtitle menu (tracks + text size)
 $('#btn-subs').addEventListener('click', () => {
   $('#speedmenu').hidden = true; $('#epspanel').hidden = true;
   const m = $('#subsmenu');
@@ -496,33 +630,30 @@ async function generateSubs() {
   }, 5000);
 }
 
-// speed menu + autoplay
 $('#btn-speed').addEventListener('click', () => {
   $('#subsmenu').hidden = true; $('#epspanel').hidden = true;
   const m = $('#speedmenu');
   m.hidden = !m.hidden;
-  if (!m.hidden) {
-    m.innerHTML = [0.5, 0.75, 1, 1.25, 1.5, 2].map((r) =>
-      `<div class="item ${settings.rate === r ? 'sel' : ''}" data-r="${r}">${r}&times;</div>`
-    ).join('') + `<div class="menusec">Playback</div>
-      <div class="item ${settings.autoplayNext ? 'sel' : ''}" id="auto-next">Autoplay next ${settings.autoplayNext ? '&#10003;' : ''}</div>`;
-    m.querySelectorAll('.item').forEach((el) => el.addEventListener('click', () => {
-      if (el.id === 'auto-next') {
-        settings.autoplayNext = !settings.autoplayNext;
-        saveSettings(); buildSpeedMenuRef(); return;
-      }
-      settings.rate = +el.dataset.r;
-      video().playbackRate = settings.rate;
-      $('#btn-speed').innerHTML = settings.rate + '&times;';
-      saveSettings(); hideMenus();
-    }));
-  }
+  if (!m.hidden) buildSpeedMenu();
 });
-function buildSpeedMenuRef() {
-  $('#speedmenu').hidden = true; $('#btn-speed').click();
+function buildSpeedMenu() {
+  const m = $('#speedmenu');
+  m.innerHTML = [0.5, 0.75, 1, 1.25, 1.5, 2].map((r) =>
+    `<div class="item ${settings.rate === r ? 'sel' : ''}" data-r="${r}">${r}&times;</div>`
+  ).join('') + `<div class="menusec">Playback</div>
+    <div class="item ${settings.autoplayNext ? 'sel' : ''}" id="auto-next">Autoplay next ${settings.autoplayNext ? '&#10003;' : ''}</div>`;
+  m.querySelectorAll('.item').forEach((el) => el.addEventListener('click', () => {
+    if (el.id === 'auto-next') {
+      settings.autoplayNext = !settings.autoplayNext;
+      saveSettings(); buildSpeedMenu(); return;
+    }
+    settings.rate = +el.dataset.r;
+    video().playbackRate = settings.rate;
+    $('#btn-speed').innerHTML = settings.rate + '&times;';
+    saveSettings(); hideMenus();
+  }));
 }
 
-// episodes panel
 $('#btn-eps').addEventListener('click', async () => {
   $('#subsmenu').hidden = true; $('#speedmenu').hidden = true;
   const m = $('#epspanel');
@@ -554,10 +685,11 @@ $('#btn-fs').addEventListener('click', toggleFs);
 $('#btn-compat').addEventListener('click', () => {
   if (!P) return;
   const wasCompat = P.mode === 'transcode';
-  P.mode = wasCompat ? pickMode(P.data.file) : 'transcode';
+  P.mode = wasCompat ? P.modes[0] : 'transcode';
+  P.modeIdx = P.modes.indexOf(P.mode);
   $('#btn-compat').classList.toggle('on', P.mode === 'transcode');
-  attachPlayback(Math.floor(displayTime()));
-  flashSubs(P.mode === 'transcode' ? 'Compat: full GPU re-encode (heavy)' : P.mode === 'mse' ? 'Smart mode: original video + AAC audio' : 'Direct play');
+  attachPlayback(Math.max(0, Math.floor(displayTime())));
+  flashSubs(P.mode === 'transcode' ? 'Compat: full CPU re-encode (may buffer on 4K)' : 'Back to auto mode: ' + P.mode);
 });
 
 $('#btn-startnext').addEventListener('click', () => { if (P?.data.nextId) location.hash = `#/w/${P.data.nextId}`; });
@@ -577,7 +709,6 @@ function toggleFs() {
   else document.documentElement.requestFullscreen();
 }
 
-// keyboard
 document.addEventListener('keydown', (e) => {
   if (!P || $('#player').hidden) return;
   const v = video();
@@ -585,8 +716,8 @@ document.addEventListener('keydown', (e) => {
     case ' ': case 'k': e.preventDefault(); v.paused ? v.play() : v.pause(); break;
     case 'ArrowRight': v.currentTime += 10; break;
     case 'ArrowLeft': v.currentTime = Math.max(0, v.currentTime - 10); break;
-    case 'j': case 'ArrowDown': setVolume(Math.max(0, settings.volume - 0.1), false); break;
-    case 'l': case 'ArrowUp': setVolume(Math.min(1, settings.volume + 0.1), false); break;
+    case 'ArrowDown': setVolume(Math.max(0, settings.volume - 0.1), false); break;
+    case 'ArrowUp': setVolume(Math.min(1, settings.volume + 0.1), false); break;
     case 'f': toggleFs(); break;
     case 'm': setVolume(settings.volume, !settings.muted); break;
     case 'c': $('#btn-subs').click(); break;

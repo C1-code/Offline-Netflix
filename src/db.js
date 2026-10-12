@@ -12,6 +12,8 @@ db.pragma('foreign_keys = ON');
   const cols = db.prepare(`PRAGMA table_info(files)`).all().map((c) => c.name);
   if (!cols.includes('vcodec')) db.exec(`ALTER TABLE files ADD COLUMN vcodec TEXT`);
   if (!cols.includes('acodec')) db.exec(`ALTER TABLE files ADD COLUMN acodec TEXT`);
+  if (!cols.includes('vcodec_str')) db.exec(`ALTER TABLE files ADD COLUMN vcodec_str TEXT`);
+  if (!cols.includes('acodec_str')) db.exec(`ALTER TABLE files ADD COLUMN acodec_str TEXT`);
 }
 db.exec(`
 CREATE TABLE IF NOT EXISTS titles (
@@ -101,7 +103,7 @@ export const q = {
   fileByPath: db.prepare(`SELECT * FROM files WHERE path = ?`),
   fileById: db.prepare(`SELECT * FROM files WHERE id = ?`),
   insertFile: db.prepare(`INSERT INTO files (title_id, path, filename, ext, size, kind, season, episode, ep_name) VALUES (@title_id,@path,@filename,@ext,@size,@kind,@season,@episode,@ep_name)`),
-  updateFileProbe: db.prepare(`UPDATE files SET duration=@duration, width=@width, height=@height, vcodec=@vcodec, acodec=@acodec, probe_done=1 WHERE id=@id`),
+  updateFileProbe: db.prepare(`UPDATE files SET duration=@duration, width=@width, height=@height, vcodec=@vcodec, acodec=@acodec, vcodec_str=@vcodec_str, acodec_str=@acodec_str, probe_done=1 WHERE id=@id`),
   updateEpMeta: db.prepare(`UPDATE files SET ep_name=@ep_name, ep_overview=@ep_overview, ep_still=@ep_still WHERE id=@id`),
   setThumb: db.prepare(`UPDATE files SET thumb=@thumb WHERE id=@id`),
   deleteFile: db.prepare(`DELETE FROM files WHERE id = ?`),

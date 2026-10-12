@@ -185,7 +185,7 @@ export async function scan({ probe = true, subs = true } = {}) {
         const f = toProbe[idx++];
         try {
           const info = await probeVideo(f.path);
-          q.updateFileProbe.run({ id: f.id, duration: info.duration, width: info.width, height: info.height, vcodec: info.vcodec, acodec: info.acodec });
+          q.updateFileProbe.run({ id: f.id, duration: info.duration, width: info.width, height: info.height, vcodec: info.vcodec, acodec: info.acodec, vcodec_str: info.vcodecStr, acodec_str: info.acodecStr });
           probed++;
         } catch { /* unreadable file; leave probe_done=0 */ }
       }

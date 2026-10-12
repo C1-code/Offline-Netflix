@@ -85,7 +85,7 @@ app.get('/api/file/:id', (req, res) => {
     file: {
       id: f.id, kind: f.kind, season: f.season, episode: f.episode,
       epName: f.ep_name, epOverview: f.ep_overview, duration: f.duration || p?.duration || 0,
-      vcodec: f.vcodec, acodec: f.acodec,
+      vcodec: f.vcodec, acodec: f.acodec, vcodec_str: f.vcodec_str, acodec_str: f.acodec_str,
       still: imgUrl(f.ep_still) || (f.thumb ? `/thumb/${f.id}` : null)
     },
     title: { id: t.id, name: t.name, year: t.year, backdrop: imgUrl(t.backdrop), poster: imgUrl(t.poster) },
@@ -143,6 +143,20 @@ app.post('/api/scan', async (req, res) => {
 
 // ---------- Video streaming ----------
 
+// Surface ffmpeg stderr in server.log so playback problems are diagnosable.
+function pipeErrors(proc, label) {
+  let buf = '';
+  proc.stderr.on('data', (d) => {
+    buf += d.toString();
+    if (buf.length > 8000) buf = buf.slice(-8000);
+  });
+  proc.on('close', (code) => {
+    if (code !== 0 && code !== null) {
+      console.error('[ffmpeg:' + label + '] exited ' + code + ':', buf.trim().split('\n').slice(-6).join(' | '));
+    }
+  });
+}
+
 function transcodeStream(req, res, f, start = 0) {
   if (!start) {
     const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
@@ -157,27 +171,30 @@ function transcodeStream(req, res, f, start = 0) {
     'Content-Type': 'video/mp4', 'Accept-Ranges': 'none',
     'X-Transcoded': '1', 'Cache-Control': 'no-store'
   });
-  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout.pipe(res);
+  pipeErrors(proc, 'transcode ' + path.basename(f.path));
   const kill = () => { try { proc.kill('SIGKILL'); } catch {} };
   req.on('close', kill);
   res.on('close', kill);
 }
 
-// Audio-only transcode (video untouched) for codecs browsers can't decode
-// (E-AC3, DTS, TrueHD, PCM). Streamed as MPEG-TS for MSE playback.
+// Video passthrough remux (fMP4 + MSE) for codecs browsers can't decode
+// natively (E-AC3, DTS, ...). Audio copied when supported, else AAC.
 function mseAudioStream(req, res, f, start = 0) {
   const args = [];
   if (start > 0) args.push('-ss', String(start));
   args.push('-i', f.path, '-map', '0:v:0', '-map', '0:a:0',
-    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '384k',
-    '-mpegts_flags', 'resend_headers', '-f', 'mpegts', 'pipe:1');
+    '-c:v', 'copy',
+    ...(req.query.acopy === '1' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '384k']),
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1');
   res.writeHead(200, {
-    'Content-Type': 'video/mp2t', 'Accept-Ranges': 'none',
+    'Content-Type': 'video/mp4', 'Accept-Ranges': 'none',
     'X-Playback-Mode': 'mse-audio', 'Cache-Control': 'no-store'
   });
-  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout.pipe(res);
+  pipeErrors(proc, 'remux ' + path.basename(f.path) + (start ? ' @' + start + 's' : ''));
   const kill = () => { try { proc.kill('SIGKILL'); } catch {} };
   req.on('close', kill);
   res.on('close', kill);
