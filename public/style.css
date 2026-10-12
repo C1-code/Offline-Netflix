@@ -143,3 +143,7 @@ img { display: block; }
 .searchgrid { display: grid; grid-template-columns: repeat(auto-fill, 158px); gap: 14px; padding: 0 24px; }
 .empty { color: var(--dim); padding: 20px 24px; }
 .railbtns { position: relative; }
+
+/* the hidden attribute must win over display:flex on these overlays */
+#nextoverlay[hidden] { display: none; }
+#subsmenu[hidden] { display: none; }

@@ -18,8 +18,8 @@ export async function ensureThumb(fileRow) {
   try {
     await ffmpeg([
       '-ss', String(at), '-i', fileRow.path,
-      '-frames:v', '1', '-vf', "scale=360:-2,format=yuv420p",
-      '-q:v', '3', out
+      '-frames:v', '1', '-vf', "scale=640:-2,format=yuv420p",
+      '-q:v', '2', out
     ], 120000);
   } catch (e) {
     return null;

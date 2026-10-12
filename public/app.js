@@ -303,9 +303,13 @@ function updateSeekUI() {
   $('#seek').value = Math.round((v.currentTime / v.duration) * 1000);
   $('#timecur').textContent = fmtTime(v.currentTime);
   $('#timetot').textContent = fmtTime(v.duration);
-  $('#btn-next').hidden = !(P.data.nextId && v.duration - v.currentTime < 120);
-  if (P.data.nextId && v.duration - v.currentTime < 45 && v.currentTime > 5 && $('#nextoverlay').hidden && !P.nextShown) {
-    P.nextShown = true;
+  const nearEnd = P.data.nextId != null && v.duration - v.currentTime < 120;
+  $('#btn-next').hidden = !nearEnd;
+  if (!nearEnd && !$('#nextoverlay').hidden) {
+    // defensive: never show "up next" while playback is mid-stream
+    $('#nextoverlay').hidden = true;
+    clearInterval(P.nextTimer);
+    P.nextShown = false;
   }
 }
 
