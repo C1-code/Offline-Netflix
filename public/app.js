@@ -192,6 +192,9 @@ const displayTime = () => video().currentTime + (P && P.mode !== 'native' && P.t
 const MODE_LEARN_KEY = 'oflix-mode-learn';
 function learnMap() { try { return JSON.parse(localStorage.getItem(MODE_LEARN_KEY) || '{}'); } catch { return {}; } }
 function learnMode(file, mode) {
+  // Never remember native for files whose audio the browser can't decode:
+  // silent video still fires the "playing" event and would poison the map.
+  if (mode === 'native' && !GOOD_ACODECS.includes(file.acodec || '')) return;
   const m = learnMap();
   const k = (file.vcodec || '') + '|' + (file.acodec || '');
   if (m[k] !== mode) { m[k] = mode; localStorage.setItem(MODE_LEARN_KEY, JSON.stringify(m)); }
@@ -206,15 +209,23 @@ function msOK(codecStr) {
 //   native   — browser decodes the file as-is
 //   remux    — video passthrough (fMP4+MSE), audio copied or -> AAC
 //   transcode— full CPU re-encode to H.264/AAC
+// native is only ever in the chain when the browser can decode BOTH tracks.
+// A file like HEVC+E-AC3 "plays" natively but silent (video decodes, audio
+// doesn't), which used to poison the learned-mode map into silent playback.
 function modeChain(file) {
   const v = file.vcodec || '', a = file.acodec || '';
+  const nativeOK = GOOD_ACODECS.includes(a) && GOOD_VCODECS.includes(v);
+  const remuxOK = GOOD_VCODECS.includes(v) && msOK(file.vcodec_str) && msOK('mp4a.40.2');
+  const chain = ['transcode'];
+  if (remuxOK) chain.unshift('remux');
+  if (nativeOK) chain.unshift('native');
+  // Honor what worked last time, but only if it is still a sound-capable mode.
   const learned = learnMap()[v + '|' + a];
-  let first = null;
-  if (learned) first = learned;
-  else if (GOOD_ACODECS.includes(a) && GOOD_VCODECS.includes(v)) first = 'native';
-  else if (GOOD_VCODECS.includes(v) && msOK(file.vcodec_str) && msOK('mp4a.40.2')) first = 'remux';
-  else first = 'transcode';
-  return [first, ...['native', 'remux', 'transcode'].filter((m) => m !== first)];
+  if (learned && chain.includes(learned)) {
+    chain.splice(chain.indexOf(learned), 1);
+    chain.unshift(learned);
+  }
+  return chain;
 }
 
 function hideMenus() {
@@ -235,6 +246,7 @@ function closePlayer() {
   v.removeAttribute('src');
   try { v.load(); } catch {}
   $('#player').hidden = true;
+  document.body.classList.remove('watching');
   hideMenus();
   $('#nextoverlay').hidden = true;
   $('#subsbox').innerHTML = '';
@@ -262,6 +274,7 @@ async function openWatch(fileId) {
         timeOffset: 0, cues: null, activeSub: -2, lastCue: undefined, subCache: {} };
   P.mode = P.modes[0];
   $('#player').hidden = false;
+  document.body.classList.add('watching');
   hideMenus();
   $('#nextoverlay').hidden = true;
   const v = video();
@@ -496,12 +509,17 @@ window.addEventListener('pagehide', saveProgressNow);
 
 function updateSeekUI() {
   const v = video();
-  if (!v.duration) return;
+  // Use the file's real duration: in remux/transcode modes v.duration is only
+  // the buffered stream so far (~30s ahead), which made the dot and total time wrong.
+  const dur = P?.data.file.duration || v.duration;
+  if (!dur) return;
   const t = displayTime();
-  $('#seek').value = Math.min(1000, Math.round((t / v.duration) * 1000));
+  const pct = Math.min(100, Math.max(0, (t / dur) * 100));
+  $('#seek').value = Math.min(1000, Math.round((t / dur) * 1000));
+  $('#seek').style.setProperty('--fill', pct.toFixed(2) + '%');
   $('#timecur').textContent = fmtTime(t);
-  $('#timetot').textContent = fmtTime(v.duration);
-  const nearEnd = P?.data.nextId != null && v.duration - v.currentTime < 120;
+  $('#timetot').textContent = fmtTime(dur);
+  const nearEnd = P?.data.nextId != null && dur - t < 120;
   $('#btn-next').hidden = !nearEnd;
   if (!nearEnd && !$('#nextoverlay').hidden) {
     $('#nextoverlay').hidden = true;
@@ -559,8 +577,11 @@ video().addEventListener('error', () => {
 
 $('#seek').addEventListener('input', (e) => {
   const v = video();
-  if (!v.duration) return;
-  const target = (e.target.value / 1000) * v.duration;
+  const dur = P?.data.file.duration || v.duration;   // file-relative, matches updateSeekUI
+  if (!dur) return;
+  const frac = e.target.value / 1000;
+  $('#seek').style.setProperty('--fill', (frac * 100).toFixed(2) + '%');
+  const target = frac * dur;
   if (P && P.mode !== 'native') {       // remux/transcode: restart the stream at the target
     attachPlayback(Math.max(0, Math.floor(target)));
   } else {

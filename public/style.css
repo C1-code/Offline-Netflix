@@ -9,6 +9,8 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text);
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+/* hide the page scrollbar while the player overlay is open (incl. fullscreen) */
+body.watching, body:has(#player:not([hidden])) { overflow: hidden; }
 a { color: inherit; text-decoration: none; }
 button { cursor: pointer; }
 img { display: block; }
@@ -113,7 +115,10 @@ img { display: block; }
 #controls.hidden { opacity: 0; pointer-events: none; }
 #seekwrap { position: relative; margin-bottom: 4px; }
 #seek { width: 100%; appearance: none; -webkit-appearance: none; background: transparent; height: 18px; margin: 0; z-index: 3; }
-#seek::-webkit-slider-runnable-track { height: 5px; border-radius: 3px; background: rgba(255,255,255,.28); }
+#seek::-webkit-slider-runnable-track {
+  height: 5px; border-radius: 3px;
+  background: linear-gradient(to right, var(--accent) var(--fill, 0%), rgba(255,255,255,.28) var(--fill, 0%));
+}
 #seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
   background: var(--accent); margin-top: -4.5px; }
 #ctlrow { display: flex; align-items: center; gap: 10px; }
