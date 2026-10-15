@@ -1,0 +1,13 @@
+# Optional GPU overlay for NVIDIA hosts. Enables NVENC transcoding and
+# Whisper CUDA transcription inside the container.
+# Requires the NVIDIA driver + nvidia-container-toolkit on the host.
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  offline-netflix:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

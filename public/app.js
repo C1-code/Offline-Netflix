@@ -24,6 +24,7 @@ function route() {
   if (h.startsWith('#/t/')) renderTitle(+h.slice(4));
   else if (h.startsWith('#/w/')) openWatch(+h.slice(4));
   else if (h.startsWith('#/q/')) renderSearch(decodeURIComponent(h.slice(4)));
+  else if (h === '#/settings') renderSettings();
   else renderHome();
 }
 
@@ -50,17 +51,34 @@ function cwCardHtml(c) {
   return `<div class="card" onclick="location.hash='#/w/${c.fileId}'">
     ${posterImg(c)}
     <div class="overlay"><div class="play"><span>&#9654;</span></div><div class="name">${esc(c.name)}<br><small style="color:#9a9aa5">${esc(c.label)}</small></div></div>
+    <button class="cw-x" title="Remove from Continue Watching" onclick="dismissContinue(event, ${c.fileId})">&#10005;</button>
     <div class="progresslabel">${fmtTime(c.duration - c.position)} left</div>
     <div class="bar"><i style="width:${Math.round((c.frac || 0) * 100)}%"></i></div>
   </div>`;
 }
+
+// Remove a Continue Watching card without starting playback.
+window.dismissContinue = async (ev, fileId) => {
+  ev.stopPropagation();
+  try { await fetch('/api/progress/' + fileId, { method: 'DELETE' }); } catch {}
+  if (state.lib) state.lib.continue = state.lib.continue.filter((c) => c.fileId !== fileId);
+  const card = ev.target.closest('.card');
+  const rowEl = card && card.closest('.rail');
+  if (card) card.remove();
+  if (rowEl && !rowEl.querySelector('.card')) rowEl.remove();
+};
 
 // ---------- home ----------
 
 async function renderHome() {
   closePlayer();
   document.title = 'Offlineflix';
-  const lib = await j('/api/library');
+  let lib;
+  try { lib = await j('/api/library'); }
+  catch (e) {
+    $('#view').innerHTML = `<div class="empty">Library unavailable — is the server running? <br><small style="color:#666">${esc(e.message)}</small></div>`;
+    return;
+  }
   state.lib = lib;
   const featured = lib.continue[0] || lib.series.find((s) => s.backdrop) || lib.movies.find((m) => m.backdrop) || lib.series[0] || lib.movies[0];
   if (!featured) {
@@ -106,6 +124,85 @@ async function renderSearch(term) {
   $('#view').innerHTML = results.length
     ? `<div class="searchgrid">${results.map(titleCardHtml).join('')}</div>`
     : `<div class="empty">No results for “${esc(term)}”</div>`;
+}
+
+// ---------- settings ----------
+
+async function renderSettings() {
+  closePlayer();
+  document.title = 'Settings';
+  let s;
+  try { s = await j('/api/settings'); }
+  catch (e) {
+    $('#view').innerHTML = `<div class="empty">Settings unavailable — the server needs a restart to pick up new endpoints. <br><small style="color:#666">${esc(e.message)}</small></div>`;
+    return;
+  }
+  $('#view').innerHTML = `
+    <section class="settings">
+      <h1>Settings</h1>
+      <div class="field">
+        <label for="set-mediapath">Media folder</label>
+        <input id="set-mediapath" spellcheck="false" value="${esc(s.mediaPath)}">
+        ${s.mediaPathExists ? '' : '<div class="fielderr">This folder does not currently exist on disk</div>'}
+        <div class="hint">Where your movies and shows live. Saving a new folder starts a library scan.</div>
+      </div>
+      <div class="field">
+        <label for="set-autoscan">Auto-scan interval (minutes)</label>
+        <input id="set-autoscan" type="number" min="0" max="1440" step="1" value="${s.autoScanMinutes}">
+        <div class="hint">How often to check the media folder for new files. 0 turns it off.</div>
+      </div>
+      <div class="field">
+        <label for="set-tmdbkey">TMDB API key</label>
+        <input id="set-tmdbkey" spellcheck="false" value="${esc(s.tmdbApiKey)}">
+        <div class="hint">Free key from themoviedb.org/settings/api — used by <code>npm run tmdb:sync</code>.</div>
+      </div>
+      <div class="field">
+        <label for="set-port">Server port</label>
+        <input id="set-port" type="number" min="1" max="65535" value="${s.port}">
+        <div class="hint">Changing the port requires a server restart.</div>
+      </div>
+      <div class="field">
+        <label class="check"><input id="set-transcode" type="checkbox" ${s.transcodeEnabled ? 'checked' : ''}> Enable compatibility transcoding (CPU/NVENC fallback)</label>
+      </div>
+      <div class="btnrow">
+        <button class="bigbtn" id="set-save">Save</button>
+        <button class="bigbtn secondary" id="set-scan">Scan now</button>
+      </div>
+      <div id="set-status"></div>
+    </section>`;
+  $('#set-save').addEventListener('click', async () => {
+    const status = $('#set-status');
+    status.style.color = '';
+    status.textContent = 'Saving…';
+    const body = {
+      mediaPath: $('#set-mediapath').value.trim(),
+      autoScanMinutes: Math.round(+$('#set-autoscan').value || 0),
+      tmdbApiKey: $('#set-tmdbkey').value.trim(),
+      port: Math.round(+$('#set-port').value || 0),
+      transcodeEnabled: $('#set-transcode').checked
+    };
+    try {
+      await j('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      status.textContent = 'Saved.';
+    } catch (e) {
+      let msg = e.message;
+      try { msg = Object.entries(JSON.parse(e.message).errors).map(([k, v]) => `${k}: ${v}`).join(', '); } catch {}
+      status.style.color = '#ff6b6b';
+      status.textContent = 'Could not save — ' + msg;
+    }
+  });
+  $('#set-scan').addEventListener('click', async () => {
+    const status = $('#set-status');
+    status.style.color = '';
+    status.textContent = 'Scanning library…';
+    try {
+      const r = await j('/api/scan?probe=0&subs=0', { method: 'POST' });
+      status.textContent = `Scan done — ${r.files} files · ${r.series} series · ${r.movies} movies · ${r.removed} removed.`;
+    } catch (e) {
+      status.style.color = '#ff6b6b';
+      status.textContent = 'Scan failed — ' + e.message;
+    }
+  });
 }
 
 // ---------- state ----------
@@ -186,15 +283,54 @@ const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(set
 const GOOD_VCODECS = ['h264', 'hevc', 'vp8', 'vp9', 'av1', 'mpeg4', 'mpeg2video'];
 const GOOD_ACODECS = ['aac', 'mp3', 'mp2', 'opus', 'flac', 'vorbis', 'alac', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_f32le'];
 
+
+// ---------- playback diagnostics ----------
+// One line per playback event in server.log ([diag] ...) so "it buffers"
+// becomes data: buffered-ahead (data pacing?), dropped frames (decode?), and
+// time-to-first-frame per stream attach. Live readout: press D in the player.
+const diag = { attachAt: 0, firstPlayingMs: null, stalls: 0 };
+function diagSnapshot(ev) {
+  const v = video();
+  let ahead = 0;
+  for (let i = 0; i < v.buffered.length; i++) if (v.buffered.end(i) > ahead) ahead = v.buffered.end(i);
+  const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+  return {
+    ev, mode: P?.mode || '-', t: Math.round(v.currentTime || 0),
+    readyState: v.readyState, paused: v.paused,
+    bufferedAhead: Math.round((ahead - (v.currentTime || 0)) * 10) / 10,
+    dropped: q ? q.droppedVideoFrames : -1, frames: q ? q.totalVideoFrames : -1,
+    firstPlayingMs: diag.firstPlayingMs, fileId: P?.data?.file?.id ?? null
+  };
+}
+function diagReport(ev) {
+  if (!P) return;
+  if (ev === 'playing' && diag.firstPlayingMs == null) diag.firstPlayingMs = Math.round(performance.now() - diag.attachAt);
+  if (ev === 'waiting' || ev === 'stalled') diag.stalls++;
+  j('/api/debug-stall', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(diagSnapshot(ev)) }).catch(() => {});
+}
+['waiting', 'stalled', 'playing', 'seeking', 'error'].forEach((ev) => video().addEventListener(ev, () => diagReport(ev)));
+function diagUI() {
+  const el = $('#dbgbox');
+  if (!el || el.hidden) return;
+  const s = diagSnapshot('ui');
+  el.textContent = `${s.mode} | ahead ${s.bufferedAhead}s | ready ${s.readyState} | drop ${s.dropped}/${s.frames} | t=${s.t}s | stalls ${diag.stalls} | firstFrame ${s.firstPlayingMs ?? '-'}ms`;
+}
 const displayTime = () => video().currentTime + (P && P.mode !== 'native' && P.timeOffset ? P.timeOffset : 0);
 
 // Learned modes: which playback mode actually worked per codec combo.
-const MODE_LEARN_KEY = 'oflix-mode-learn';
+// v2 key: the old map could remember 'transcode' (the CPU re-encode last
+// resort) after a single slow start, permanently buffering every future
+// playback of that codec combo. The new key starts everyone clean.
+const MODE_LEARN_KEY = 'oflix-mode-learn2';
 function learnMap() { try { return JSON.parse(localStorage.getItem(MODE_LEARN_KEY) || '{}'); } catch { return {}; } }
 function learnMode(file, mode) {
   // Never remember native for files whose audio the browser can't decode:
   // silent video still fires the "playing" event and would poison the map.
   if (mode === 'native' && !GOOD_ACODECS.includes(file.acodec || '')) return;
+  // Never remember 'transcode' either: it is the last-resort CPU re-encode,
+  // which can't keep up with big files in WSL. A one-off fallback must not
+  // become the preferred mode — remux/native attempts are cheap to retry.
+  if (mode === 'transcode') return;
   const m = learnMap();
   const k = (file.vcodec || '') + '|' + (file.acodec || '');
   if (m[k] !== mode) { m[k] = mode; localStorage.setItem(MODE_LEARN_KEY, JSON.stringify(m)); }
@@ -212,10 +348,44 @@ function msOK(codecStr) {
 // native is only ever in the chain when the browser can decode BOTH tracks.
 // A file like HEVC+E-AC3 "plays" natively but silent (video decodes, audio
 // doesn't), which used to poison the learned-mode map into silent playback.
-function modeChain(file) {
+// Browser decode capability: Chrome/Firefox expose decodingInfo hints. A
+// stream reported not-smooth/not-power-efficient is being software-decoded —
+// on 4K 10-bit HEVC that means visible buffering, so those files skip the
+// passthrough modes and go straight to (NVENC) transcode. Cached per codec +
+// resolution; if the API is missing or errors, keep the old behavior.
+const DECODE_OK_KEY = 'oflix-decode-ok2';
+function decodeMap() { try { return JSON.parse(localStorage.getItem(DECODE_OK_KEY) || '{}'); } catch { return {}; } }
+async function decodesSmoothly(file) {
+  if (!navigator.mediaCapabilities?.decodingInfo) return true;
+  const key = (file.vcodec_str || '') + '|' + (file.width || 0) + 'x' + (file.height || 0);
+  const cached = decodeMap();
+  if (key in cached) return cached[key];
+  let ok = true;
+  try {
+    const ci = await navigator.mediaCapabilities.decodingInfo({
+      type: 'file',
+      video: {
+        contentType: 'video/mp4; codecs="' + (file.vcodec_str || '') + '"',
+        width: file.width || 1920,
+        height: file.height || 1080,
+        bitrate: 10000000,
+        framerate: 30
+      }
+    });
+    // powerEfficient=false (e.g. Chrome HW acceleration off) alone no longer
+    // forces transcode — only genuinely not-smooth decoding does.
+    ok = !!ci.supported && !!ci.smooth;
+  } catch { ok = true; }
+  const m = decodeMap();
+  m[key] = ok;
+  localStorage.setItem(DECODE_OK_KEY, JSON.stringify(m));
+  return ok;
+}
+
+function modeChain(file, decodesOK = true) {
   const v = file.vcodec || '', a = file.acodec || '';
-  const nativeOK = GOOD_ACODECS.includes(a) && GOOD_VCODECS.includes(v);
-  const remuxOK = GOOD_VCODECS.includes(v) && msOK(file.vcodec_str) && msOK('mp4a.40.2');
+  const nativeOK = decodesOK && GOOD_ACODECS.includes(a) && GOOD_VCODECS.includes(v);
+  const remuxOK = decodesOK && GOOD_VCODECS.includes(v) && msOK(file.vcodec_str) && msOK('mp4a.40.2');
   const chain = ['transcode'];
   if (remuxOK) chain.unshift('remux');
   if (nativeOK) chain.unshift('native');
@@ -230,7 +400,6 @@ function modeChain(file) {
 
 function hideMenus() {
   $('#subsmenu').hidden = true;
-  $('#speedmenu').hidden = true;
   $('#epspanel').hidden = true;
 }
 
@@ -240,6 +409,7 @@ function closePlayer() {
   clearInterval(P.saveTimer);
   clearInterval(P.nextTimer);
   clearTimeout(P.watchdog);
+  clearTimeout(P.seekTimer);
   destroyMSE();
   const v = video();
   v.pause();
@@ -269,8 +439,9 @@ function initialStart() {
 async function openWatch(fileId) {
   const d = await j('/api/file/' + fileId);
   if (P) closePlayer();
-  P = { fileId, data: d, saveTimer: null, nextTimer: null, watchdog: null,
-        modes: modeChain(d.file), modeIdx: 0, mode: null, mse: null,
+  const smooth = await decodesSmoothly(d.file);
+  P = { fileId, data: d, saveTimer: null, nextTimer: null, watchdog: null, seekTimer: null, seekDragging: false, playToken: 0,
+        modes: modeChain(d.file, smooth), modeIdx: 0, mode: null, mse: null,
         timeOffset: 0, cues: null, activeSub: -2, lastCue: undefined, subCache: {} };
   P.mode = P.modes[0];
   $('#player').hidden = false;
@@ -282,7 +453,7 @@ async function openWatch(fileId) {
   v.muted = settings.muted;
   v.playbackRate = settings.rate;
   $('#vol').value = Math.round(settings.volume * 100);
-  $('#btn-speed').innerHTML = settings.rate + '&times;';
+  renderSpeedBtns();
   $('#subsbox').className = 'sub-' + settings.subSize;
   attachPlayback(initialStart());
   v.addEventListener('ended', onEnded);
@@ -293,8 +464,29 @@ async function openWatch(fileId) {
   renderNowPlaying();
 }
 
+// Start playback only once a small warm-up buffer exists, so a slow first
+// read (media on /mnt/c over 9p) doesn't begin playback and instantly stall.
+// Gives up after maxWait and plays anyway — the watchdog handles real failures.
+function playWhenReady(token, minAhead = 1.5, maxWait = 4000) {
+  const v = video();
+  const t0 = Date.now();
+  (function tick() {
+    if (!P || token !== P.playToken) return;   // superseded by another attach/close
+    let ahead = 0;
+    for (let i = 0; i < v.buffered.length; i++) if (v.buffered.end(i) > ahead) ahead = v.buffered.end(i);
+    if (v.readyState >= 3 || ahead - v.currentTime >= minAhead || Date.now() - t0 >= maxWait) {
+      v.play().catch(() => {});
+      return;
+    }
+    setTimeout(tick, 100);
+  })();
+}
+
 function attachPlayback(startAt) {
   destroyMSE();
+  if (P) P.playToken = (P.playToken || 0) + 1;   // cancels any pending playWhenReady loop
+  diag.attachAt = performance.now();
+  diag.firstPlayingMs = null;
   const v = video();
   const resume = startAt || 0;
   const f = P.data.file;
@@ -312,7 +504,7 @@ function attachPlayback(startAt) {
     const url = `/stream/${P.fileId}?audio=1${acopy ? '&acopy=1' : ''}${resume ? `&start=${resume}` : ''}`;
     P.mse = new Fmp4MsePlayer(v, url, codecs, (e) => playbackFailed('MSE: ' + (e?.message || e)));
     P.mse.start();
-    v.play().catch(() => {});
+    playWhenReady(P.playToken);
   } else { // transcode
     P.timeOffset = resume;
     v.src = `/stream/${P.fileId}?transcode=1${resume ? `&start=${resume}` : ''}`;
@@ -361,6 +553,7 @@ class Fmp4MsePlayer {
   constructor(video, url, codecs, onError) {
     this.video = video; this.url = url; this.codecs = codecs; this.onError = onError;
     this.stopped = false; this.mse = null; this.sb = null; this.reader = null;
+    this.evicting = false;
   }
   start() {
     (async () => {
@@ -403,7 +596,21 @@ class Fmp4MsePlayer {
       const sb = this.sb;
       const cleanup = () => { sb.removeEventListener('updateend', done); sb.removeEventListener('error', err); };
       const done = () => { cleanup(); resolve(); };
-      const err = () => { cleanup(); this.fail(new Error('MSE append failed')); };
+      const err = () => {
+        cleanup();
+        // Chromium throws QuotaExceeded once the SourceBuffer's memory quota is
+        // full (easy to hit with a 60s lookahead of high-bitrate 4K). Drop
+        // already-played data and retry this append once.
+        if (!this.evicting && sb.buffered.length && this.video.currentTime > 2) {
+          this.evicting = true;
+          const retried = () => { this.evicting = false; this.append(buf).then(resolve); };
+          try { sb.remove(0, Math.max(0, this.video.currentTime - 2)); }
+          catch (e) { this.evicting = false; this.fail(new Error('MSE append failed')); return; }
+          sb.addEventListener('updateend', retried, { once: true });
+        } else {
+          this.fail(new Error('MSE append failed'));
+        }
+      };
       sb.addEventListener('updateend', done, { once: true });
       sb.addEventListener('error', err, { once: true });
       try { sb.appendBuffer(buf); } catch (e) { cleanup(); this.fail(e); }
@@ -414,7 +621,9 @@ class Fmp4MsePlayer {
     let acc = new Uint8Array(0), init = [], initDone = false, seg = [], stopped = () => this.stopped;
     for (;;) {
       if (stopped()) return;
-      if (this.bufferedAhead() > 30) { await new Promise((r) => setTimeout(r, 250)); continue; }
+      // Lookahead cap: buffer ~60s ahead so slow disk reads (media on /mnt/c
+      // over 9p) never catch up with playback mid-scene.
+      if (this.bufferedAhead() > 60) { await new Promise((r) => setTimeout(r, 250)); continue; }
       const { value, done } = await this.reader.read();
       if (value && value.length) acc = concat(acc, value);
       let progressed = true;
@@ -478,6 +687,7 @@ async function setSubTrack(i) {
 }
 
 function subLoop() {
+  diagUI();
   if (P && P.cues) {
     const t = displayTime();
     const cue = P.cues.find((c) => t >= c.start && t <= c.end) || null;
@@ -508,6 +718,7 @@ function saveProgressNow() {
 window.addEventListener('pagehide', saveProgressNow);
 
 function updateSeekUI() {
+  if (P?.seekDragging) return;   // user is scrubbing; don't snap the thumb back
   const v = video();
   // Use the file's real duration: in remux/transcode modes v.duration is only
   // the buffered stream so far (~30s ahead), which made the dot and total time wrong.
@@ -579,16 +790,25 @@ $('#seek').addEventListener('input', (e) => {
   const v = video();
   const dur = P?.data.file.duration || v.duration;   // file-relative, matches updateSeekUI
   if (!dur) return;
+  if (P) P.seekDragging = true;                      // stop timeupdate fighting the thumb
   const frac = e.target.value / 1000;
   $('#seek').style.setProperty('--fill', (frac * 100).toFixed(2) + '%');
   const target = frac * dur;
   if (P && P.mode !== 'native') {       // remux/transcode: restart the stream at the target
-    attachPlayback(Math.max(0, Math.floor(target)));
+    // Restarting ffmpeg on every input tick made seeking stall; restart once,
+    // 300ms after the last movement.
+    clearTimeout(P.seekTimer);
+    P.seekTimer = setTimeout(() => {
+      if (!P) return;
+      P.seekDragging = false;
+      attachPlayback(Math.max(0, Math.floor(target)));
+    }, 300);
   } else {
     v.currentTime = target;
   }
   showControls();
 });
+$('#seek').addEventListener('change', () => { if (P) P.seekDragging = false; });
 
 function setVolume(vol, muted) {
   settings.volume = vol; settings.muted = muted;
@@ -602,7 +822,7 @@ $('#vol').addEventListener('input', (e) => setVolume(e.target.value / 100, false
 $('#btn-mute').addEventListener('click', () => setVolume(settings.volume, !settings.muted));
 
 $('#btn-subs').addEventListener('click', () => {
-  $('#speedmenu').hidden = true; $('#epspanel').hidden = true;
+  $('#epspanel').hidden = true;
   const m = $('#subsmenu');
   m.hidden = !m.hidden;
   if (!m.hidden) buildSubsMenu();
@@ -651,32 +871,29 @@ async function generateSubs() {
   }, 5000);
 }
 
-$('#btn-speed').addEventListener('click', () => {
-  $('#subsmenu').hidden = true; $('#epspanel').hidden = true;
-  const m = $('#speedmenu');
-  m.hidden = !m.hidden;
-  if (!m.hidden) buildSpeedMenu();
-});
-function buildSpeedMenu() {
-  const m = $('#speedmenu');
-  m.innerHTML = [0.5, 0.75, 1, 1.25, 1.5, 2].map((r) =>
-    `<div class="item ${settings.rate === r ? 'sel' : ''}" data-r="${r}">${r}&times;</div>`
-  ).join('') + `<div class="menusec">Playback</div>
-    <div class="item ${settings.autoplayNext ? 'sel' : ''}" id="auto-next">Autoplay next ${settings.autoplayNext ? '&#10003;' : ''}</div>`;
-  m.querySelectorAll('.item').forEach((el) => el.addEventListener('click', () => {
-    if (el.id === 'auto-next') {
-      settings.autoplayNext = !settings.autoplayNext;
-      saveSettings(); buildSpeedMenu(); return;
-    }
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+function renderSpeedBtns() {
+  $('#speedbtns').innerHTML = RATES.map((r) =>
+    `<button class="ctl spd ${settings.rate === r ? 'on' : ''}" data-r="${r}" title="Playback speed">${r}&times;</button>`
+  ).join('') + `<button class="ctl spd ${settings.autoplayNext ? 'on' : ''}" id="btn-autonext" title="Autoplay next episode">Auto${settings.autoplayNext ? ' &#10003;' : ''}</button>`;
+}
+$('#speedbtns').addEventListener('click', (e) => {
+  const el = e.target.closest('.spd');
+  if (!el) return;
+  if (el.id === 'btn-autonext') {
+    settings.autoplayNext = !settings.autoplayNext;
+  } else {
     settings.rate = +el.dataset.r;
     video().playbackRate = settings.rate;
-    $('#btn-speed').innerHTML = settings.rate + '&times;';
-    saveSettings(); hideMenus();
-  }));
-}
+  }
+  saveSettings();
+  renderSpeedBtns();
+});
+renderSpeedBtns();
+
 
 $('#btn-eps').addEventListener('click', async () => {
-  $('#subsmenu').hidden = true; $('#speedmenu').hidden = true;
+  $('#subsmenu').hidden = true;
   const m = $('#epspanel');
   if (!m.hidden) { m.hidden = true; return; }
   const d = await j('/api/title/' + P.data.title.id);
@@ -710,7 +927,7 @@ $('#btn-compat').addEventListener('click', () => {
   P.modeIdx = P.modes.indexOf(P.mode);
   $('#btn-compat').classList.toggle('on', P.mode === 'transcode');
   attachPlayback(Math.max(0, Math.floor(displayTime())));
-  flashSubs(P.mode === 'transcode' ? 'Compat: full CPU re-encode (may buffer on 4K)' : 'Back to auto mode: ' + P.mode);
+  flashSubs(P.mode === 'transcode' ? 'Compat: re-encoding on the fly (GPU when available)' : 'Back to auto mode: ' + P.mode);
 });
 
 $('#btn-startnext').addEventListener('click', () => { if (P?.data.nextId) location.hash = `#/w/${P.data.nextId}`; });
@@ -733,8 +950,17 @@ function toggleFs() {
 document.addEventListener('keydown', (e) => {
   if (!P || $('#player').hidden) return;
   const v = video();
+  // Space (or K) toggles playback. When a control button was left focused by
+  // a click, the browser ALSO fires that button's built-in space activation
+  // on keyup — a second toggle that cancels ours, so Space "does nothing".
+  // preventDefault + blur makes this handler the only one that reacts.
+  if (e.code === 'Space' || e.key === ' ' || e.key === 'k') {
+    e.preventDefault();
+    const ae = document.activeElement;
+    if (ae && ae.tagName === 'BUTTON') ae.blur();
+    v.paused ? v.play() : v.pause();
+  }
   switch (e.key) {
-    case ' ': case 'k': e.preventDefault(); v.paused ? v.play() : v.pause(); break;
     case 'ArrowRight': v.currentTime += 10; break;
     case 'ArrowLeft': v.currentTime = Math.max(0, v.currentTime - 10); break;
     case 'ArrowDown': setVolume(Math.max(0, settings.volume - 0.1), false); break;
@@ -743,12 +969,14 @@ document.addEventListener('keydown', (e) => {
     case 'm': setVolume(settings.volume, !settings.muted); break;
     case 'c': $('#btn-subs').click(); break;
     case 'n': if (P.data.nextId) location.hash = `#/w/${P.data.nextId}`; break;
+    case 'd': { const el = $('#dbgbox'); if (el) el.hidden = !el.hidden; break; }
     case 'Escape': hideMenus(); $('#btn-back').click(); break;
   }
   showControls();
 });
 
 $('#navback').addEventListener('click', () => (location.hash = '#/'));
+$('#btn-settings').addEventListener('click', () => (location.hash = '#/settings'));
 $('#logo').addEventListener('click', () => (location.hash = '#/'));
 
 // ---------- boot ----------

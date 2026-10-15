@@ -73,6 +73,7 @@ def main():
     ap.add_argument("output")
     ap.add_argument("--model", default="large-v3-turbo")
     ap.add_argument("--language", default="auto")
+    ap.add_argument("--task", default="transcribe", choices=["transcribe", "translate"])
     args = ap.parse_args()
 
     model = load_model(args.model)
@@ -81,6 +82,7 @@ def main():
     segments, info = model.transcribe(
         args.input,
         language=lang,
+        task=args.task,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
         condition_on_previous_text=False,

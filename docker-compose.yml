@@ -1,0 +1,22 @@
+# Bring up the whole stack with:  docker compose up -d
+# Per-machine settings live in .env (copy .env.example and edit MEDIA_PATH).
+# The media folder is mounted at the SAME path inside the container as on the
+# host, so the library DB records identical paths whether the app runs native
+# or in Docker on this machine (switching between them never re-scans).
+# GPU (NVENC + Whisper CUDA) on NVIDIA hosts: add -f docker-compose.gpu.yml
+services:
+  offline-netflix:
+    build: .
+    image: offline-netflix:local
+    container_name: offline-netflix
+    ports:
+      - "${PORT:-8420}:${PORT:-8420}"
+    environment:
+      MEDIA_PATH: ${MEDIA_PATH:?Set MEDIA_PATH in .env (absolute path to your media folder)}
+      PORT: ${PORT:-8420}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+    volumes:
+      - ./data:/app/data                                  # library DB, thumbs, subs cache
+      - ./config.json:/app/config.json                    # Settings-page edits persist
+      - ${MEDIA_PATH}:${MEDIA_PATH}                       # media at its real path
+    restart: unless-stopped

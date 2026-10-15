@@ -12,6 +12,7 @@
   <div id="navback" hidden>&#8592; Back</div>
   <div class="spacer"></div>
   <div id="searchwrap"><input id="search" placeholder="Search" autocomplete="off" spellcheck="false"></div>
+  <div id="btn-settings" title="Settings">&#9881;</div>
 </header>
 
 <main id="view"></main>
@@ -20,6 +21,8 @@
   <video id="video"></video>
   <div id="subsbox" class="sub-md"></div>
   <div id="nowplaying"></div>
+  <div id="subsflash"></div>
+  <div id="dbgbox" hidden></div>
   <div id="subsflash"></div>
   <div id="controls">
     <div id="seekwrap">
@@ -34,7 +37,7 @@
       <button id="btn-mute" class="ctl" title="Mute (M)">&#128266;</button>
       <input id="vol" type="range" min="0" max="100" value="100" title="Volume">
       <button id="btn-subs" class="ctl" title="Subtitles (C)">CC</button>
-      <button id="btn-speed" class="ctl" title="Playback speed">1&times;</button>
+      <span id="speedbtns"></span>
       <button id="btn-eps" class="ctl" title="Episodes">&#9776;</button>
       <button id="btn-compat" class="ctl" title="Compatibility mode (CPU re-encode)">Compat</button>
       <button id="btn-fs" class="ctl" title="Fullscreen (F)">&#x26F6;</button>
@@ -42,7 +45,6 @@
     </div>
   </div>
   <div id="subsmenu" hidden></div>
-  <div id="speedmenu" hidden></div>
   <div id="epspanel" hidden></div>
   <div id="nextoverlay" hidden>
     <div id="nextbox">

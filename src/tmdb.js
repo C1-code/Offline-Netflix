@@ -23,9 +23,19 @@ async function get(pathname, params = {}) {
   url.searchParams.set('api_key', key());
   url.searchParams.set('language', cfg.tmdbLanguage || 'en');
   for (const [k, v] of Object.entries(params)) if (v != null) url.searchParams.set(k, v);
-  const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
-  if (!res.ok) throw new Error(`TMDB ${res.status} for ${pathname}`);
-  return res.json();
+  // TMDB throttles bursts (429). Retry with backoff instead of letting one
+  // throttled season fetch silently skip that season's metadata forever.
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    if (res.ok) return res.json();
+    if ((res.status === 429 || res.status >= 500) && attempt < 5) {
+      const retryAfter = res.headers.get('retry-after');
+      const wait = retryAfter ? +retryAfter * 1000 : Math.min(30000, 2000 * 2 ** attempt);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+    throw new Error(`TMDB ${res.status} for ${pathname}`);
+  }
 }
 
 async function download(url, dest) {

@@ -64,16 +64,33 @@ function resolveExtrasShow(relParts) {
   return null;
 }
 
+// Normalize for title matching: folder names and TMDB names often differ only
+// in punctuation/spacing ("Avengers Endgame" vs "Avengers: Endgame"), which
+// must not create duplicate titles.
+const normTitle = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 function findSeries(name) {
   const row = db.prepare(`SELECT * FROM titles WHERE kind='series' AND name = ? COLLATE NOCASE AND hidden = 0`).get(name);
-  return row || null;
+  if (row) return row;
+  const key = normTitle(name);
+  return db.prepare(`SELECT * FROM titles WHERE kind='series' AND hidden = 0`).all()
+    .find((t) => normTitle(t.name) === key) || null;
 }
 
 function findMovie(name, year) {
-  const row = year != null
+  const exact = year != null
     ? db.prepare(`SELECT * FROM titles WHERE kind='movie' AND name = ? COLLATE NOCASE AND (year = ? OR year IS NULL) AND hidden = 0`).get(name, year)
     : db.prepare(`SELECT * FROM titles WHERE kind='movie' AND name = ? COLLATE NOCASE AND year IS NULL AND hidden = 0`).get(name);
-  return row || null;
+  if (exact) return exact;
+  // Fuzzy fallback: same title ignoring punctuation/spacing. Prefer the
+  // parsed year, then a yearless entry, then anything.
+  const key = normTitle(name);
+  const cands = db.prepare(`SELECT * FROM titles WHERE kind='movie' AND hidden = 0`).all()
+    .filter((t) => normTitle(t.name) === key);
+  if (!cands.length) return null;
+  return cands.find((t) => year != null && t.year === year)
+    || cands.find((t) => t.year == null)
+    || cands[0];
 }
 
 const insertTitle = db.prepare(`INSERT INTO titles (kind, name, sort_name, year, folder) VALUES (?,?,?,?,?)`);
@@ -90,6 +107,7 @@ export async function scan({ probe = true, subs = true } = {}) {
 
   const existing = new Map(q.allFiles.all().map((f) => [f.path, f.id]));
   const seen = new Set();
+  const added = [];   // ids of files newly discovered this pass (for post-processing)
   let skipped = 0;
 
   for (const v of videos) {
@@ -112,10 +130,11 @@ export async function scan({ probe = true, subs = true } = {}) {
         titleRow = findSeries(parsed.showName);
       }
       setFolder.run(v.relParts[0] || null, titleRow.id);
-      insertFile.run({
+      const id = insertFile.run({
         ...base, title_id: titleRow.id, kind: 'episode',
         season: parsed.season, episode: parsed.episode, ep_name: parsed.epNameGuess || `Episode ${parsed.episode}`
-      });
+      }).lastInsertRowid;
+      added.push(Number(id));
     } else if (parsed.kind === 'extra') {
       const showName = resolveExtrasShow(v.relParts);
       if (!showName) { skipped++; continue; }
@@ -124,10 +143,11 @@ export async function scan({ probe = true, subs = true } = {}) {
         insertTitle.run('series', showName, sortKey(showName), null, v.relParts[0] || null);
         titleRow = findSeries(showName);
       }
-      insertFile.run({
+      const id = insertFile.run({
         ...base, title_id: titleRow.id, kind: 'extra',
         season: null, episode: null, ep_name: cleanName(v.filename.replace(/\.[^.]+$/, '')) || v.filename
-      });
+      }).lastInsertRowid;
+      added.push(Number(id));
     } else {
       // Movie: strip a trailing year from the name (it lives in the year column)
       let name = parsed.movieName;
@@ -141,15 +161,26 @@ export async function scan({ probe = true, subs = true } = {}) {
         titleRow = findMovie(name, year);
       }
       setFolder.run(v.relParts[0] || null, titleRow.id);
-      insertFile.run({ ...base, title_id: titleRow.id, kind: 'movie', season: null, episode: null, ep_name: null });
+      const id = insertFile.run({ ...base, title_id: titleRow.id, kind: 'movie', season: null, episode: null, ep_name: null }).lastInsertRowid;
+      added.push(Number(id));
     }
   }
 
-  // Remove DB rows for files that vanished
+  // Remove DB rows for files that vanished. Safety rail: if EVERY known file
+  // looks missing on a non-empty library, that's almost certainly a media-path
+  // mismatch (same library mounted/copied at a different path) rather than a
+  // real deletion — removing here would wipe the whole library and cascade-
+  // delete progress and subtracks with it.
   let removed = 0;
-  for (const [p, id] of existing) {
-    if (!seen.has(p)) { q.deleteFile.run(id); removed++; }
+  const missing = [...existing.keys()].filter((p) => !seen.has(p));
+  if (existing.size && missing.length === existing.size) {
+    throw new Error(
+      `all ${existing.size} known files are missing from "${root}" — refusing to ` +
+      'wipe the library (media path mismatch?). Set the correct mediaPath, or ' +
+      'delete data/library.db to rebuild from scratch.'
+    );
   }
+  for (const p of missing) { q.deleteFile.run(existing.get(p)); removed++; }
 
   // Hide duplicate copies: same movie title or same series+season+episode; keep the largest file
   const dupHide = db.prepare(`UPDATE files SET hidden = 1 WHERE id = ?`);
@@ -197,7 +228,7 @@ export async function scan({ probe = true, subs = true } = {}) {
   if (subs) subMatch = harvestExternalSubs();
 
   return {
-    videos: videos.length, skipped, removed, dupes, probed,
+    videos: videos.length, skipped, removed, dupes, probed, added,
     movies: q.titlesByKind.all('movie').length,
     series: q.titlesByKind.all('series').length,
     files: q.countFiles.get().n,

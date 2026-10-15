@@ -8,6 +8,7 @@
     "start": "node server.js",
     "scan": "node tools/scan.mjs",
     "subs": "node tools/subs-all.mjs",
+    "subs:prune": "node tools/prune-subs.mjs",
     "rename:dry": "node tools/rename.mjs --dry-run",
     "rename:apply": "node tools/rename.mjs --apply",
     "tmdb:sync": "node tools/tmdb-sync.mjs",

@@ -2,9 +2,10 @@
 title Offline Netflix
 setlocal enabledelayedexpansion
 
-REM Launch (or reuse) the server inside WSL. The minimized window STAYS OPEN
-REM on purpose: it keeps the WSL session (and therefore the server) alive.
-REM Closing that window stops the server; double-click this file again to restart.
+REM (Re)launch the server inside WSL: each run stops the previous instance and
+REM starts the current code, so feature/config changes take effect immediately.
+REM The minimized window STAYS OPEN on purpose: it keeps the WSL session
+REM (and therefore the server) alive. Closing that window stops the server.
 start "Offline Netflix server" /min wsl.exe -e bash -c "cd /home/elias/offline-netflix && ./start.sh; exec sleep infinity"
 
 REM Wait until the server actually answers, then open the browser

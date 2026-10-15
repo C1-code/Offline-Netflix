@@ -116,6 +116,7 @@ export const q = {
   getProgress: db.prepare(`SELECT * FROM progress WHERE file_id = ?`),
   setProgress: db.prepare(`INSERT INTO progress (file_id, position, duration, updated_at) VALUES (@file_id,@position,@duration,@updated_at)
     ON CONFLICT(file_id) DO UPDATE SET position=@position, duration=@duration, updated_at=@updated_at`),
+  deleteProgress: db.prepare(`DELETE FROM progress WHERE file_id = ?`),
   continueWatching: db.prepare(`
     SELECT p.*, f.*, t.kind AS t_kind, t.name AS t_name, t.year AS t_year, t.poster AS t_poster,
            (p.position * 1.0 / NULLIF(p.duration,0)) AS frac

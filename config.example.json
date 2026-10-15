@@ -1,0 +1,10 @@
+{
+  "mediaPath": "",
+  "port": 8420,
+  "tmdbApiKey": "",
+  "tmdbLanguage": "en",
+  "whisperModel": "large-v3-turbo",
+  "whisperLanguage": "auto",
+  "transcodeEnabled": true,
+  "autoScanMinutes": 5
+}

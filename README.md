@@ -3,6 +3,35 @@
 A Netflix-style frontend for your local media library. Runs entirely on your
 machine; a Windows Desktop shortcut boots the server and opens the browser.
 
+## Clone to a new machine
+
+The repo is self-contained and adapts to whatever machine it's on: the media
+folder, Whisper venv, and ffmpeg are auto-detected at startup (env vars beat
+`config.json`, which beats auto-detection).
+
+**Option A — Docker (recommended for laptops):**
+
+```bash
+git clone https://github.com/<you>/offline-netflix.git
+cd offline-netflix
+cp config.example.json config.json
+cp .env.example .env          # set MEDIA_PATH to this machine's media folder
+docker compose up -d          # add -f docker-compose.gpu.yml for NVIDIA GPUs
+```
+
+Then open http://localhost:8420. Everything else (DB, thumbnails, subtitles
+cache) lives in `./data` and survives rebuilds. TMDB key: put it in `.env`
+(`TMDB_API_KEY`) or the Settings page.
+
+**Option B — native (bare metal, this WSL desktop):**
+
+```bash
+git clone https://github.com/<you>/offline-netflix.git
+cd offline-netflix
+./setup.sh                    # config bootstrap + npm install + Whisper venv
+npm run scan && npm start
+```
+
 ## Daily use
 
 Double-click **Offline Netflix** on your Desktop (a copy of `Offline Netflix.bat`
@@ -29,8 +58,23 @@ is also in this folder). The library loads at http://localhost:8420.
 
 ## Adding new media later
 
-Drop it anywhere in `C:\Users\elias\Desktop\Media`, then run `npm run scan`
-and `npm run subs` (or POST /api/scan). Each new file is processed exactly once.
+Drop it anywhere in your media folder — the server notices automatically
+(auto-scan runs at startup, on folder changes, and every N minutes; the media
+folder itself and the interval are configurable on the Settings page via the
+⚙ button in the top bar). Each new file is processed exactly once.
+
+New files are also finished automatically by the new-media pipeline:
+1. probed with ffprobe (durations/codec info),
+2. matched against TMDB for posters, episode titles and overviews (needs an
+   API key in Settings or `TMDB_API_KEY`),
+3. subtitles: external `.srt` files matched, embedded streams extracted, and
+4. anything still without subtitles is queued for **Whisper transcription —
+   only when an NVIDIA GPU is present** (`nvidia-smi` must work), so a laptop
+   never silently spends CPU-days transcribing.
+
+Everything degrades gracefully per machine: no TMDB key → step 2 is skipped;
+no Whisper venv or no GPU → step 4 is skipped. Manual passes still work
+(`npm run scan`, `npm run subs`) and are resumable.
 
 ## Layout
 
@@ -43,6 +87,9 @@ and `npm run subs` (or POST /api/scan). Each new file is processed exactly once.
 ## Notes
 
 - "Continue Watching" progress is per-episode in SQLite; nothing leaves your
-  machine.
+  machine. Cards can be cleared with the ✕ in their top-right corner (this
+  deletes the resume position for that episode).
 - If a file won't play in the browser (some HEVC/TS files), press **Compat**
-  in the player — it re-encodes on the fly with NVENC.
+  in the player — it re-encodes on the fly with NVENC (auto-detected at
+  startup; CPU x264 fallback). Files the browser can't hardware-decode
+  (e.g. 4K 10-bit HEVC) are routed straight to transcode automatically.

@@ -19,6 +19,18 @@ const LANGS = [
 ];
 
 export function guessLang(filename) {
+  // Most specific first: an explicit language token right before the
+  // extension ("Movie.eng.srt", "Movie.pt-BR.srt"). This beats substring
+  // false positives in titles, e.g. "Sagrona" -> 'ron' (Romanian),
+  // "Messenger" -> 'ger' (German), "Rebellion" -> 'ell' (Greek).
+  const tok = filename.toLowerCase().match(/\.([a-z]{2,3}(?:[-_][a-z]{2,4})?)\.(?:srt|ass|ssa|vtt|sub)$/);
+  if (tok) {
+    const t = tok[1];
+    const hit = LANGS.find(([, c]) => c === t) ||
+      LANGS.find(([n]) => n.replace(/\.$/, '') === t) ||
+      LANGS.find(([, c]) => c === t.slice(0, 2));
+    if (hit) return { code: hit[1], label: hit[2] };
+  }
   const base = path.basename(filename, path.extname(filename)).toLowerCase();
   for (const [needle, code, label] of LANGS) {
     if (base.includes(needle)) return { code, label };
@@ -79,6 +91,9 @@ export function harvestExternalSubs() {
     }
     if (best && bestScore >= 0.6) {
       const { code, label } = guessLang(sub);
+      // English only: skip per-language releases (e.g. YTS "Subs/" folders with
+      // 10+ languages). Unlabeled subs still default to 'en' below, as before.
+      if (code && code !== 'en') continue;
       q.addSubtrack.run({
         file_id: best.id, path: sub,
         lang: code || 'en', label: label || 'External',
@@ -99,6 +114,10 @@ export async function extractEmbeddedSubs(fileRow) {
   let n = 0;
   for (const s of probed.subtitles.slice(0, 4)) {
     if (!['subrip', 'srt', 'ass', 'ssa', 'webvtt', 'mov_text'].includes(s.codec)) continue;
+    // English only: foreign-language streams are skipped (a release MKV can
+    // carry a dozen languages). Anything left with no English track falls
+    // through to Whisper, which always produces English.
+    if (!s.lang || !/^en/i.test(s.lang)) continue;
     const lang = s.lang && s.lang !== 'und' ? s.lang : (n === 0 ? 'en' : `track${n + 1}`);
     const out = path.join(dir, `${base}.${lang}.srt`);
     if (!fs.existsSync(out) || fs.statSync(out).size === 0) {
@@ -174,12 +193,19 @@ export async function transcribeFile(fileId) {
 
 export function runWhisper(videoPath, outPath) {
   return new Promise((resolve, reject) => {
+    // Machine without a Whisper venv (laptop, slim container): fail this one
+    // file with a clear message instead of a spawn ENOENT deep in execFile.
+    if (!cfg.whisperAvailable) {
+      reject(new Error('Whisper not installed (tools/.venv missing) — run tools/setup-whisper.sh for AI subtitles'));
+      return;
+    }
     const { execFile } = childProcess;
     execFile(cfg.venvPython, [
       path.join(cfg.root, 'tools', 'transcribe.py'),
       videoPath, outPath,
       '--model', cfg.whisperModel,
-      '--language', cfg.whisperLanguage
+      '--language', cfg.whisperLanguage,
+      '--task', 'translate'  // always produce English, even for foreign audio
     ], { timeout: 8 * 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) { console.error('[whisper stderr]', (stderr || '').slice(-4000)); reject(err); }
       else resolve(stdout);
