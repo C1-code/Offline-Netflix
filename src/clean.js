@@ -165,7 +165,10 @@ export function parseMediaPath(relParts, filename) {
 
   const marker = parseEpisodeMarker(filename);
   const inExtras = looksLikeExtrasFolder(relParts.join('/'));
-  if (marker && !inExtras) {
+  // Bonus content lives in extras folders — EXCEPT true special episodes: a
+  // file carrying an S00Eyy marker inside a "Specials" folder is a real
+  // season-0 episode, not a featurette ("The Bear - S00E01 - Gary.mkv").
+  if (marker && (!inExtras || marker.season === 0)) {
     const pre = String(filename).slice(0, marker.index);
     const preTokens = tokenSet(cleanName(pre) + ' ' + cleanName(filename.replace(/\.[^.]+$/, '')));
     const resolved = resolveShowName(relParts, preTokens);

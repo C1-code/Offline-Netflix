@@ -6,7 +6,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import cfg, { saveConfig } from './src/config.js';
 import { db, q } from './src/db.js';
 import { scan } from './src/scanner.js';
-import { queueWhisper, queueStatus, harvestExternalSubs, extractEmbeddedSubs } from './src/subtitles.js';
+import { queueWhisper, queueStatus, extractEmbeddedSubs } from './src/subtitles.js';
 import { syncAll, syncSeries, syncMovie } from './src/tmdb.js';
 import { probeVideo } from './src/probe.js';
 
@@ -28,6 +28,7 @@ function titleCard(t) {
   const main = db.prepare(`SELECT * FROM files WHERE title_id = ? AND hidden = 0 AND kind != 'extra' ORDER BY kind, COALESCE(season,0), episode LIMIT 1`).get(t.id);
   return {
     id: t.id, kind: t.kind, name: t.name, year: t.year, overview: t.overview,
+    folder: t.folder || null,
     poster: imgUrl(t.poster) || (main ? `/thumb/${main.id}` : null),
     backdrop: imgUrl(t.backdrop) || null,
     subBadge: main ? main.subtitle_status : null
@@ -457,9 +458,9 @@ async function processNewMedia(addedIds) {
       }
     }
 
-    // 3. Subtitles: match external .srt files first (cheap), then extract
-    //    embedded streams (ffmpeg reads the file once — slow on big 4K files).
-    harvestExternalSubs();
+    // 3. Subtitles: extract embedded streams (ffmpeg reads the file once —
+    //    slow on big 4K files). External .srt files are never used; whatever
+    //    still has no track is Whisper-transcribed in step 4.
     let extracted = 0;
     for (const f of rows) {
       const cur = fresh(f);

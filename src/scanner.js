@@ -7,7 +7,6 @@ import {
   looksLikeExtrasFolder, cleanName, extractYear, titleCase
 } from './clean.js';
 import { probeVideo } from './probe.js';
-import { harvestExternalSubs } from './subtitles.js';
 
 const SAMPLE_RE = /(^|[.\-_ ])(sample|trailer)([.\-_ ]|$)/i;
 
@@ -109,14 +108,27 @@ export async function scan({ probe = true, subs = true } = {}) {
   const seen = new Set();
   const added = [];   // ids of files newly discovered this pass (for post-processing)
   let skipped = 0;
+  let healed = 0;
 
   for (const v of videos) {
     seen.add(v.abs);
+    const parsed = parseMediaPath(v.relParts, v.filename);
     if (existing.has(v.abs)) {
-      db.prepare(`UPDATE files SET size=? WHERE id=?`).run(v.size, existing.get(v.abs));
+      const id = existing.get(v.abs);
+      db.prepare(`UPDATE files SET size=? WHERE id=?`).run(v.size, id);
+      // Self-heal classification: files first scanned before the S00-special
+      // fix were stored as extras; promote them when they parse as an episode
+      // now ("The Bear - S00E01 - Gary.mkv" inside a Specials folder).
+      if (parsed.kind === 'episode') {
+        const row = db.prepare(`SELECT kind FROM files WHERE id = ?`).get(id);
+        if (row && row.kind === 'extra') {
+          db.prepare(`UPDATE files SET kind='episode', season=?, episode=?, ep_name=? WHERE id=?`)
+            .run(parsed.season, parsed.episode, parsed.epNameGuess || `Episode ${parsed.episode}`, id);
+          healed++;
+        }
+      }
       continue;
     }
-    const parsed = parseMediaPath(v.relParts, v.filename);
     const ext = path.extname(v.filename).slice(1).toLowerCase();
     const base = { path: v.abs, filename: v.filename, ext, size: v.size };
 
@@ -182,6 +194,16 @@ export async function scan({ probe = true, subs = true } = {}) {
   }
   for (const p of missing) { q.deleteFile.run(existing.get(p)); removed++; }
 
+  // Delete titles left with no files after removals (e.g. a one-off featurette
+  // scanned as a movie whose file was later deleted from disk). Without this
+  // the title row lingers forever and shows up as a dead card on the home page.
+  const orphans = db.prepare(`
+    SELECT t.id, t.name, t.kind FROM titles t
+    WHERE t.hidden = 0 AND NOT EXISTS (SELECT 1 FROM files f WHERE f.title_id = t.id)
+  `).all();
+  let removedTitles = 0;
+  for (const t of orphans) { q.deleteTitle.run(t.id); removedTitles++; console.log(`[scan] removed empty title: ${t.name} (${t.kind})`); }
+
   // Hide duplicate copies: same movie title or same series+season+episode; keep the largest file
   const dupHide = db.prepare(`UPDATE files SET hidden = 1 WHERE id = ?`);
   const dupNote = db.prepare(`UPDATE titles SET dup_note = ? WHERE id = ?`);
@@ -224,14 +246,15 @@ export async function scan({ probe = true, subs = true } = {}) {
     await Promise.all(Array.from({ length: CONC }, worker));
   }
 
-  let subMatch = null;
-  if (subs) subMatch = harvestExternalSubs();
+  // External .srt matching was removed — subtitles are embedded extraction or
+  // Whisper transcription only. The `subs` option is kept for API
+  // compatibility (tools/scan.mjs and /api/scan still pass it).
+  void subs;
 
   return {
-    videos: videos.length, skipped, removed, dupes, probed, added,
+    videos: videos.length, skipped, removed, dupes, probed, added, healed, removedTitles,
     movies: q.titlesByKind.all('movie').length,
     series: q.titlesByKind.all('series').length,
-    files: q.countFiles.get().n,
-    subs: subMatch
+    files: q.countFiles.get().n
   };
 }

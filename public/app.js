@@ -68,6 +68,36 @@ window.dismissContinue = async (ev, fileId) => {
   if (rowEl && !rowEl.querySelector('.card')) rowEl.remove();
 };
 
+// Group the library by each title's top-level media folder (titles.folder,
+// recorded by the scanner as the first path segment under the media root),
+// so the home page mirrors the folder layout on disk. Folders with 2+ titles
+// keep their own rail; folders holding a single title (and titles sitting
+// directly in the media root, the "Other" catch-all) pool into one combined
+// "More to Watch" rail at the end so lone cards don't strand on near-empty rows.
+function folderRails(lib) {
+  const byFolder = new Map();
+  for (const t of [...lib.series, ...lib.movies]) {
+    const key = t.folder || 'Other';
+    if (!byFolder.has(key)) byFolder.set(key, []);
+    byFolder.get(key).push(t);
+  }
+  const yearSort = (a, b) => (a.year || Infinity) - (b.year || Infinity) || String(a.name).localeCompare(String(b.name));
+  const sorted = [...byFolder.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  // keep the catch-all rail last regardless of alphabetical position
+  sorted.sort((a, b) => (a[0] === 'Other') - (b[0] === 'Other'));
+  const own = [];       // folders with 2+ titles
+  const pooled = [];    // single-title folders + "Other"
+  for (const [folder, titles] of sorted) {
+    if (titles.length > 1) own.push([folder, titles]);
+    else pooled.push(...titles);
+  }
+  pooled.sort(yearSort);
+  return own.map(([folder, titles]) => {
+    titles.sort(yearSort);
+    return rail(folder, titles, titleCardHtml);
+  }).concat(pooled.length ? [rail('More to Watch', pooled, titleCardHtml)] : []).join('');
+}
+
 // ---------- home ----------
 
 async function renderHome() {
@@ -100,8 +130,7 @@ async function renderHome() {
       </div>
     </section>
     ${rail('Continue Watching', lib.continue, cwCardHtml)}
-    ${rail('Series', lib.series, titleCardHtml)}
-    ${rail('Movies', lib.movies, titleCardHtml)}
+    ${folderRails(lib)}
   `;
 }
 
@@ -455,6 +484,8 @@ async function openWatch(fileId) {
   $('#vol').value = Math.round(settings.volume * 100);
   renderSpeedBtns();
   $('#subsbox').className = 'sub-' + settings.subSize;
+  $('#btn-eps').hidden = P.data.title.kind !== 'series';   // no episode list for movies
+  $('#btn-next').hidden = !P.data.nextId;   // skip-episode button available the whole episode
   attachPlayback(initialStart());
   v.addEventListener('ended', onEnded);
   v.addEventListener('timeupdate', updateSeekUI);
@@ -730,9 +761,7 @@ function updateSeekUI() {
   $('#seek').style.setProperty('--fill', pct.toFixed(2) + '%');
   $('#timecur').textContent = fmtTime(t);
   $('#timetot').textContent = fmtTime(dur);
-  const nearEnd = P?.data.nextId != null && dur - t < 120;
-  $('#btn-next').hidden = !nearEnd;
-  if (!nearEnd && !$('#nextoverlay').hidden) {
+  if (P?.data.nextId == null && !$('#nextoverlay').hidden) {
     $('#nextoverlay').hidden = true;
     clearInterval(P?.nextTimer);
   }
@@ -742,18 +771,8 @@ function onEnded() {
   saveProgressNow();
   if (!P?.data.nextId) return;
   if (!settings.autoplayNext) { location.hash = `#/t/${P.data.title.id}`; return; }
-  const d = P.data;
-  fetch(`/api/file/${d.nextId}`).then((r) => r.json()).then((nx) => {
-    $('#nextname').textContent = `${d.title.name} — ${nx.file.epName || epTag(nx.file.season, nx.file.episode)}`;
-  });
-  $('#nextoverlay').hidden = false;
-  let left = 10;
-  $('#nextlabel').textContent = `Up next in ${left}`;
-  clearInterval(P.nextTimer);
-  P.nextTimer = setInterval(() => {
-    $('#nextlabel').textContent = `Up next in ${--left}`;
-    if (left <= 0) { clearInterval(P.nextTimer); location.hash = `#/w/${d.nextId}`; }
-  }, 1000);
+  // jump straight into the next episode — no countdown
+  location.hash = `#/w/${P.data.nextId}`;
 }
 
 // ---------- controls & widgets ----------
@@ -861,12 +880,14 @@ async function generateSubs() {
   flashSubs('Whisper queued — subtitles appear when finished');
   const poll = setInterval(async () => {
     const qs = await j('/api/queue');
-    if (!qs.subs.some((r) => r.s === 'transcribing' || r.s === 'waiting')) {
-      clearInterval(poll);
-      const d = await j('/api/file/' + P.fileId);
-      P.data = d;
-      P.subCache = {};
-      if (d.subtracks.length) await setSubTrack(0);
+    if (qs.whisper.busy || qs.whisper.pending > 0) return;   // still working (here or elsewhere)
+    clearInterval(poll);
+    const d = await j('/api/file/' + P.fileId);
+    P.data = d;
+    P.subCache = {};
+    if (d.subtracks.length) {
+      const ai = d.subtracks.findIndex((s) => s.source === 'whisper');
+      await setSubTrack(ai >= 0 ? ai : 0);   // prefer the freshly generated track
     }
   }, 5000);
 }
@@ -910,6 +931,8 @@ $('#btn-eps').addEventListener('click', async () => {
     }
   }
   m.innerHTML = html;
+  m.hidden = false;                       // the panel was built but never shown
+  showControls();
   m.querySelectorAll('.item').forEach((el) => el.addEventListener('click', () => {
     location.hash = '#/w/' + el.dataset.fid;
   }));
@@ -920,17 +943,8 @@ $('#btn-back').addEventListener('click', () => {
   location.hash = t && t.kind === 'series' ? `#/t/${t.id}` : '#/';
 });
 $('#btn-fs').addEventListener('click', toggleFs);
-$('#btn-compat').addEventListener('click', () => {
-  if (!P) return;
-  const wasCompat = P.mode === 'transcode';
-  P.mode = wasCompat ? P.modes[0] : 'transcode';
-  P.modeIdx = P.modes.indexOf(P.mode);
-  $('#btn-compat').classList.toggle('on', P.mode === 'transcode');
-  attachPlayback(Math.max(0, Math.floor(displayTime())));
-  flashSubs(P.mode === 'transcode' ? 'Compat: re-encoding on the fly (GPU when available)' : 'Back to auto mode: ' + P.mode);
-});
-
 $('#btn-startnext').addEventListener('click', () => { if (P?.data.nextId) location.hash = `#/w/${P.data.nextId}`; });
+$('#btn-next').addEventListener('click', () => { if (P?.data.nextId) location.hash = `#/w/${P.data.nextId}`; });
 $('#nextoverlay').addEventListener('click', (e) => {
   if (e.target.id === 'nextoverlay') { $('#nextoverlay').hidden = true; clearInterval(P?.nextTimer); }
 });

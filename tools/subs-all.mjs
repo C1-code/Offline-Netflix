@@ -1,8 +1,8 @@
 // One-shot subtitle pass over the whole library, in priority order:
-//   1. external .srt/.ass files already next to videos (matched at scan time)
-//   2. subtitle streams embedded in MKV/MP4 (extracted with ffmpeg)
-//   3. Whisper (GPU) transcription for anything that still has none
-// Resumable: files that already have tracks (or a .en.srt on disk) are skipped.
+//   1. subtitle streams embedded in MKV/MP4 (extracted with ffmpeg)
+//   2. Whisper (GPU) transcription for anything that still has none
+// External .srt/.ass files are never used (AI-only subtitles).
+// Resumable: files that already have tracks are skipped.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +23,7 @@ for (const f of todo) {
     process.stdout.write(`\r[${done + skipped}/${todo.length}] skip (has subs): ${label.slice(0, 60)}${' '.repeat(10)}`);
     continue;
   }
-  // 1+2: embedded
+  // 1: embedded
   try {
     const got = await extractEmbeddedSubs(f);
     if (got.length) {
@@ -35,7 +35,7 @@ for (const f of todo) {
     }
   } catch { /* fall through to whisper */ }
 
-  // 3: whisper
+  // 2: whisper
   try {
     setStatus.run('transcribing', f.id);
     const t0 = Date.now();

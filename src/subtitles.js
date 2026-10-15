@@ -2,108 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import cfg from './config.js';
 import { db, q } from './db.js';
-import { isSubFile, nameSimilarity } from './clean.js';
 import { probeVideo, ffmpeg } from './probe.js';
 
-const LANGS = [
-  ['english', 'en', 'English'], ['eng.', 'en', 'English'], ['sdh', 'en', 'English (SDH)'],
-  ['ara', 'ar', 'Arabic'], ['brazilian', 'pt', 'Portuguese (Brazil)'], ['por.', 'pt', 'Portuguese'],
-  ['canadian', 'fr', 'French (Canada)'], ['fre.', 'fr', 'French'], ['cze', 'cs', 'Czech'],
-  ['dan', 'da', 'Danish'], ['dut', 'nl', 'Dutch'], ['ell', 'el', 'Greek'], ['fin', 'fi', 'Finnish'],
-  ['ger', 'de', 'German'], ['hun', 'hu', 'Hungarian'], ['ita', 'it', 'Italian'],
-  ['jpn', 'ja', 'Japanese'], ['kor', 'ko', 'Korean'], ['nor', 'nb', 'Norwegian'],
-  ['pol', 'pl', 'Polish'], ['rus', 'ru', 'Russian'], ['spa', 'es', 'Spanish'],
-  ['swe', 'sv', 'Swedish'], ['tur', 'tr', 'Turkish'], ['ukr', 'uk', 'Ukrainian'],
-  ['vie', 'vi', 'Vietnamese'], ['chs', 'zh', 'Chinese'], ['chi.', 'zh', 'Chinese'],
-  ['heb', 'he', 'Hebrew'], ['ron', 'ro', 'Romanian'], ['tha', 'th', 'Thai'], ['hin', 'hi', 'Hindi']
-];
 
-export function guessLang(filename) {
-  // Most specific first: an explicit language token right before the
-  // extension ("Movie.eng.srt", "Movie.pt-BR.srt"). This beats substring
-  // false positives in titles, e.g. "Sagrona" -> 'ron' (Romanian),
-  // "Messenger" -> 'ger' (German), "Rebellion" -> 'ell' (Greek).
-  const tok = filename.toLowerCase().match(/\.([a-z]{2,3}(?:[-_][a-z]{2,4})?)\.(?:srt|ass|ssa|vtt|sub)$/);
-  if (tok) {
-    const t = tok[1];
-    const hit = LANGS.find(([, c]) => c === t) ||
-      LANGS.find(([n]) => n.replace(/\.$/, '') === t) ||
-      LANGS.find(([, c]) => c === t.slice(0, 2));
-    if (hit) return { code: hit[1], label: hit[2] };
-  }
-  const base = path.basename(filename, path.extname(filename)).toLowerCase();
-  for (const [needle, code, label] of LANGS) {
-    if (base.includes(needle)) return { code, label };
-  }
-  const extLang = path.extname(filename).slice(1).toLowerCase();
-  if (extLang.length === 2) {
-    const hit = LANGS.find(([, c]) => c === extLang);
-    if (hit) return { code: hit[1], label: hit[2] };
-  }
-  return { code: null, label: null };
-}
-
-// Find all subtitle files under the media root.
-export function findSubFiles(root) {
-  const out = [];
-  const walk = (dir) => {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile() && isSubFile(e.name)) out.push(p);
-    }
-  };
-  walk(root);
-  return out;
-}
-
-// Match stray .srt/.ass files to the videos in the DB.
-export function harvestExternalSubs() {
-  const videos = q.allFiles.all().filter((f) => !f.hidden);
-  const subFiles = findSubFiles(cfg.mediaPath);
-  let matched = 0;
-  for (const sub of subFiles) {
-    const subDir = path.dirname(sub);
-    const subBase = path.basename(sub, path.extname(sub));
-    let best = null, bestScore = 0;
-    for (const v of videos) {
-      const vDir = path.dirname(v.path);
-      const vBase = path.basename(v.path, path.extname(v.path));
-      let score = nameSimilarity(subBase, vBase);
-      const rel = path.relative(subDir, vDir);
-      if (rel === '') score += 1.0;                             // same folder
-      else if (rel.split(path.sep).length === 1) score += 0.4;  // adjacent (e.g. Subs/)
-      if (score > bestScore) { bestScore = score; best = v; }
-    }
-    // Fallback: walk up from the sub's folder; the nearest ancestor that holds
-    // exactly one video owns the sub (YTS "Subs/" layout, per-language srt names).
-    if (!best || bestScore < 0.6) {
-      let dir = subDir;
-      for (let up = 0; up < 4 && dir.length > cfg.mediaPath.length; up++) {
-        const vids = videos.filter((v) => path.dirname(v.path) === dir);
-        if (vids.length === 1) { best = vids[0]; bestScore = 1; break; }
-        if (vids.length > 1) break;
-        dir = path.dirname(dir);
-      }
-    }
-    if (best && bestScore >= 0.6) {
-      const { code, label } = guessLang(sub);
-      // English only: skip per-language releases (e.g. YTS "Subs/" folders with
-      // 10+ languages). Unlabeled subs still default to 'en' below, as before.
-      if (code && code !== 'en') continue;
-      q.addSubtrack.run({
-        file_id: best.id, path: sub,
-        lang: code || 'en', label: label || 'External',
-        source: 'external', format: path.extname(sub).slice(1).toLowerCase()
-      });
-      matched++;
-    }
-  }
-  return { matched, total: subFiles.length };
-}
 
 // Extract subtitle streams embedded in an MKV/MP4 to .srt files next to the video.
 export async function extractEmbeddedSubs(fileRow) {
@@ -118,6 +19,10 @@ export async function extractEmbeddedSubs(fileRow) {
     // carry a dozen languages). Anything left with no English track falls
     // through to Whisper, which always produces English.
     if (!s.lang || !/^en/i.test(s.lang)) continue;
+    // "Forced" streams only translate the foreign-language dialogue (they are
+    // a supplement, never full coverage). Skip them: a file whose only English
+    // stream is forced should get a full Whisper transcript instead.
+    if (/forced/i.test(s.title || '')) continue;
     const lang = s.lang && s.lang !== 'und' ? s.lang : (n === 0 ? 'en' : `track${n + 1}`);
     const out = path.join(dir, `${base}.${lang}.srt`);
     if (!fs.existsSync(out) || fs.statSync(out).size === 0) {
@@ -179,16 +84,37 @@ export async function transcribeFile(fileId) {
   const f = q.fileById.get(fileId);
   if (!f) throw new Error('file not found');
   const out = path.join(path.dirname(f.path), path.basename(f.path, path.extname(f.path)) + '.en.srt');
-  if (fs.existsSync(out)) {
-    q.addSubtrack.run({ file_id: fileId, path: out, lang: 'en', label: 'English (AI)', source: 'whisper', format: 'srt' });
-    setFileStatus.run('done', fileId);
-    return out;
-  }
+  // Always transcribe fresh: a <video>.en.srt that already exists on disk is a
+  // stale external download (the AI-only pipeline never trusts those), so
+  // Whisper overwrites it instead of silently re-attaching it as "AI" output.
+  fs.rmSync(out, { force: true });
   setFileStatus.run('transcribing', fileId);
   await runWhisper(f.path, out);
   q.addSubtrack.run({ file_id: fileId, path: out, lang: 'en', label: 'English (AI)', source: 'whisper', format: 'srt' });
   setFileStatus.run('done', fileId);
   return out;
+}
+
+// pip-installed CUDA libs (nvidia-cublas-cu12, nvidia-cudnn-cu12) live inside
+// the venv and are NOT on the system loader path — without this, ctranslate2
+// raises "libcublas.so.12 is not found" and transcribe.py silently falls back
+// to CPU (hours per episode). Point LD_LIBRARY_PATH at the venv's copies.
+function whisperEnv() {
+  const env = { ...process.env };
+  try {
+    const dirs = [];
+    const libRoot = path.join(cfg.root, 'tools', '.venv', 'lib');
+    for (const v of fs.readdirSync(libRoot)) {
+      for (const pkg of ['cublas', 'cudnn']) {
+        const d = path.join(libRoot, v, 'site-packages', 'nvidia', pkg, 'lib');
+        if (fs.existsSync(d)) dirs.push(d);
+      }
+    }
+    if (dirs.length) {
+      env.LD_LIBRARY_PATH = dirs.join(':') + (env.LD_LIBRARY_PATH ? ':' + env.LD_LIBRARY_PATH : '');
+    }
+  } catch { /* no venv libs — let transcribe.py fall back on its own */ }
+  return env;
 }
 
 export function runWhisper(videoPath, outPath) {
@@ -206,7 +132,7 @@ export function runWhisper(videoPath, outPath) {
       '--model', cfg.whisperModel,
       '--language', cfg.whisperLanguage,
       '--task', 'translate'  // always produce English, even for foreign audio
-    ], { timeout: 8 * 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    ], { timeout: 8 * 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, env: whisperEnv() }, (err, stdout, stderr) => {
       if (err) { console.error('[whisper stderr]', (stderr || '').slice(-4000)); reject(err); }
       else resolve(stdout);
     });

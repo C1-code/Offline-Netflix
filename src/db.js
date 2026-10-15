@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS titles (
   UNIQUE(kind, name, year)
 );
 
+
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY,
   title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
@@ -97,6 +98,7 @@ export const q = {
   insertTitle: db.prepare(`INSERT OR IGNORE INTO titles (kind, name, sort_name, year, folder) VALUES (?,?,?,?,?)`),
   updateTitleMeta: db.prepare(`UPDATE titles SET name=@name, year=@year, overview=@overview, poster=@poster, backdrop=@backdrop, tmdb_id=@tmdb_id, tmdb_synced=1 WHERE id=@id`),
   setFolder: db.prepare(`UPDATE titles SET folder=? WHERE id=?`),
+  deleteTitle: db.prepare(`DELETE FROM titles WHERE id = ?`),
 
   allFiles: db.prepare(`SELECT * FROM files`),
   filesOfTitle: db.prepare(`SELECT * FROM files WHERE title_id = ? AND hidden = 0 ORDER BY COALESCE(season,0), episode, filename`),

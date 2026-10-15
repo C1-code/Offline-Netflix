@@ -125,8 +125,6 @@ img { display: block; }
 .ctl { background: none; border: 0; color: #fff; font-size: 20px; padding: 6px 10px; border-radius: 6px; }
 .ctl:hover { background: rgba(255,255,255,.14); }
 #btn-subs { font-weight: 800; letter-spacing: .5px; }
-#btn-compat { font-size: 12px; border: 1px solid #3a3a46; }
-#btn-compat.on { border-color: var(--accent); color: var(--accent); }
 #speedbtns { display: inline-flex; gap: 2px; }
 .ctl.spd { font-size: 12px; border: 1px solid #3a3a46; padding: 4px 6px; }
 .ctl.spd.on { border-color: var(--accent); color: var(--accent); }
@@ -137,9 +135,9 @@ img { display: block; }
 #subsmenu { position: absolute; right: 24px; bottom: 84px; background: rgba(18,18,24,.96);
   border: 1px solid #2e2e3a; border-radius: var(--radius); padding: 8px; min-width: 240px;
   max-height: 70vh; overflow-y: auto; z-index: 5; }
-#subsmenu .item { padding: 9px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; display: flex; justify-content: space-between; gap: 12px; }
-#subsmenu .item:hover { background: #26262f; }
-#subsmenu .item.sel { color: var(--accent); font-weight: 700; }
+#subsmenu .item, #epspanel .item { padding: 9px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; display: flex; justify-content: space-between; gap: 12px; }
+#subsmenu .item:hover, #epspanel .item:hover { background: #26262f; }
+#subsmenu .item.sel, #epspanel .item.sel { color: var(--accent); font-weight: 700; }
 #subsmenu .item .src { color: var(--dim); font-size: 11px; }
 #subsflash { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.7);
   padding: 6px 14px; border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; }

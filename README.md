@@ -40,7 +40,7 @@ is also in this folder). The library loads at http://localhost:8420.
 ## One-time setup (order matters)
 
 1. `npm run scan` — scans the library, parses season/episode ordering,
-   matches stray `.srt` files, hides duplicates, probes durations, and can
+   hides duplicates, probes durations, and can
    generate thumbnails (`npm run thumbs`).
 2. `npm run rename:dry` — writes `data/rename-plan.json` showing exactly how
    every file/folder will be renamed. Review it, then `npm run rename:apply`
@@ -48,9 +48,10 @@ is also in this folder). The library loads at http://localhost:8420.
 3. `npm run subs` — the subtitle pass. Per file, in order:
    1. extract subtitle streams already inside MKV/MP4 (slow on big 4K files —
       I/O bound, it must read the whole file once),
-   2. reuse any `.srt`/`.ass` found next to the video,
-   3. transcribe with **Whisper large-v3-turbo** on the RTX 3060 (needs
+   2. transcribe with **Whisper large-v3-turbo** on the RTX 3060 (needs
       `tools/setup-whisper.sh` run once; ~6GB VRAM).
+   External `.srt` files are never used — subtitles are always embedded
+   streams or AI-generated, so they are frame-synced to the file being played.
    Resumable: re-running only processes files still missing subtitles.
 4. TMDB metadata (posters, episode titles, proper display names): paste a free
    API key from https://www.themoviedb.org/settings/api into `config.json`
@@ -67,7 +68,7 @@ New files are also finished automatically by the new-media pipeline:
 1. probed with ffprobe (durations/codec info),
 2. matched against TMDB for posters, episode titles and overviews (needs an
    API key in Settings or `TMDB_API_KEY`),
-3. subtitles: external `.srt` files matched, embedded streams extracted, and
+3. subtitles: embedded English streams are extracted, and
 4. anything still without subtitles is queued for **Whisper transcription —
    only when an NVIDIA GPU is present** (`nvidia-smi` must work), so a laptop
    never silently spends CPU-days transcribing.
@@ -89,7 +90,8 @@ no Whisper venv or no GPU → step 4 is skipped. Manual passes still work
 - "Continue Watching" progress is per-episode in SQLite; nothing leaves your
   machine. Cards can be cleared with the ✕ in their top-right corner (this
   deletes the resume position for that episode).
-- If a file won't play in the browser (some HEVC/TS files), press **Compat**
-  in the player — it re-encodes on the fly with NVENC (auto-detected at
-  startup; CPU x264 fallback). Files the browser can't hardware-decode
-  (e.g. 4K 10-bit HEVC) are routed straight to transcode automatically.
+- If a file won't play in the browser (some HEVC/TS files), the player falls
+  back automatically to compatibility transcoding — it re-encodes on the fly
+  with NVENC (auto-detected at startup; CPU x264 fallback). Files the browser
+  can't hardware-decode (e.g. 4K 10-bit HEVC) are routed straight to
+  transcode without trying the faster modes first.
