@@ -31,7 +31,23 @@ The repo is self-contained and adapts to whatever machine it's on: the media
 folder, Whisper venv, and ffmpeg are auto-detected at startup (env vars beat
 `config.json`, which beats auto-detection).
 
-**Option A — Docker (recommended for laptops):**
+**Option A — double-click (Windows + WSL):**
+
+```bash
+git clone https://github.com/<you>/offline-netflix.git
+```
+
+...then double-click **`Offline Netflix.bat`** in the cloned folder. The first
+run bootstraps everything itself, no sudo and no manual installs: Node via
+nvm, a static ffmpeg into `tools/bin/` (skipped if the system already has
+ffmpeg), `npm install`, `config.json`, and the Whisper stack when the distro's
+Python allows it (`WITH_WHISPER=0` to skip the ~1 GB download). It then starts
+the server and opens the browser; later double-clicks skip straight to launch.
+First run needs internet — everything after that is fully offline. A copy of
+the .bat on the Desktop also works: it falls back to `~/offline-netflix` in
+WSL when it isn't sitting in the repo itself.
+
+**Option B — Docker (recommended for laptops):**
 
 ```bash
 git clone https://github.com/<you>/offline-netflix.git
@@ -45,7 +61,7 @@ Then open http://localhost:8420. Everything else (DB, thumbnails, subtitles
 cache) lives in `./data` and survives rebuilds. TMDB key: put it in `.env`
 (`TMDB_API_KEY`) or the Settings page.
 
-**Option B — native (bare metal, this WSL desktop):**
+**Option C — native (bare metal, this WSL desktop):**
 
 ```bash
 git clone https://github.com/<you>/offline-netflix.git
