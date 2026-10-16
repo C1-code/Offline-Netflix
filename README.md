@@ -155,7 +155,9 @@ no Whisper venv or no GPU → step 4 is skipped. Manual passes still work
 - `public/` — the UI.
 - `tools/` — CLIs: `scan.mjs`, `rename.mjs`, `thumbs.mjs`, `tmdb-sync.mjs`,
   `subs-all.mjs` (the subtitle pass), `subs-ai-only.mjs` (one-off migration to
-  AI-only subtitles), `prune-subs.mjs`; Whisper lives in `tools/.venv`.
+  AI-only subtitles), `prune-subs.mjs`; `first-run.sh` bootstraps a fresh clone
+  (Node via nvm, static ffmpeg into `tools/bin/` — no sudo); Whisper lives in
+  `tools/.venv`.
 
 ## Notes
 

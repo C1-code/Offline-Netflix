@@ -155,8 +155,10 @@ fi
 # --- start (start.sh restarts any previous instance, so this is safe to re-run) ---
 log "Starting server"
 if ./start.sh; then
-  touch data/.first-run-done
-  info "First-run setup complete. Future double-clicks skip straight to launch."
+  if [ ! -f data/.first-run-done ]; then
+    touch data/.first-run-done
+    info "First-run setup complete. Future double-clicks skip straight to launch."
+  fi
 else
   fail "server failed to start — see data/server.log"
 fi
