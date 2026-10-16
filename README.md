@@ -1,7 +1,29 @@
+
 # Offline Netflix
 
 A Netflix-style frontend for your local media library. Runs entirely on your
 machine; a Windows Desktop shortcut boots the server and opens the browser.
+
+> The original spec: *"A continue-watching feature that remembers where I'm up
+> to, subtitles (64 GB RAM / 12 GB VRAM — use powerful models), correct
+> season/episode ordering, cleaned media names. Fast and nice."* — all four are
+> in, and the subtitles piece now runs as a fully AI-generated pipeline.
+
+## Features
+
+- **Continue watching** — per-episode resume positions in SQLite, cards you can
+  dismiss with the ✕, autoplay into the next episode.
+- **AI-only subtitles** — external `.srt` files are never used (they were the
+  source of wrong-episode / mis-synced tracks). Each file gets either its
+  embedded English stream (frame-synced by construction) or a fresh Whisper
+  transcription, labeled **English (AI)**. See "How subtitles work" below.
+- **Correct ordering & clean names** — season/episode parsing, duplicate
+  hiding, and a reviewed rename plan for the files on disk.
+- **Codec-aware playback** — direct streaming when the browser can decode,
+  automatic fallback to compatibility transcoding (NVENC when available, CPU
+  x264 otherwise), with per-codec mode learning.
+- **Player niceties** — always-visible ⏭ next-episode button (or press `N`),
+  custom subtitle renderer, speed control, episode list.
 
 ## Clone to a new machine
 
@@ -45,17 +67,44 @@ is also in this folder). The library loads at http://localhost:8420.
 2. `npm run rename:dry` — writes `data/rename-plan.json` showing exactly how
    every file/folder will be renamed. Review it, then `npm run rename:apply`
    when happy. Files are only touched once.
-3. `npm run subs` — the subtitle pass. Per file, in order:
-   1. extract subtitle streams already inside MKV/MP4 (slow on big 4K files —
-      I/O bound, it must read the whole file once),
-   2. transcribe with **Whisper large-v3-turbo** on the RTX 3060 (needs
-      `tools/setup-whisper.sh` run once; ~6GB VRAM).
-   External `.srt` files are never used — subtitles are always embedded
-   streams or AI-generated, so they are frame-synced to the file being played.
-   Resumable: re-running only processes files still missing subtitles.
+3. `npm run subs` — the subtitle pass (details below). Resumable: re-running
+   only processes files still missing subtitles.
 4. TMDB metadata (posters, episode titles, proper display names): paste a free
    API key from https://www.themoviedb.org/settings/api into `config.json`
    (`tmdbApiKey`), then `npm run tmdb:sync` (internet needed once).
+
+## How subtitles work
+
+Priority per file:
+
+1. **Embedded English streams** — extracted from MKV/MP4 with ffmpeg and
+   served as WebVTT. Streams titled "Forced" are skipped: they only translate
+   foreign-language dialogue and are never full coverage.
+2. **Whisper large-v3-turbo** (`tools/transcribe.py`, CUDA on the RTX 3060;
+   ~6 GB VRAM). In practice ~15–27× realtime, so a full library pass takes
+   hours, not days. Falls back to CPU automatically if no GPU is usable.
+
+Design decisions baked into the pipeline:
+
+- **External `.srt` files are never matched or reused.** They caused the
+  original bug (subtitles synced to a different cut of the episode showing the
+  wrong content). If you still want them for other players, fine — the app
+  ignores them. Leftovers from the migration are renamed `*.external-bak` and
+  can be deleted.
+- **Transcribe, don't translate.** Whisper's translate pass produces degenerate
+  timestamps even on English audio (30-second text blocks, 1-second junk cues).
+  `transcribe.py` transcribes in the source language and only re-runs with
+  `--task translate` when the detected language isn't English — foreign content
+  still ends up with English subs.
+- **Hallucination guards.** Segments that are one/two words repeated over and
+  over (Whisper's classic music/silence hallucination) or low-confidence filler
+  are dropped.
+- **GPU libs.** pip's `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` install inside
+  the venv, off the loader path; `src/subtitles.js` points `LD_LIBRARY_PATH` at
+  them per-spawn so ctranslate2 actually uses the GPU instead of silently
+  falling back to CPU.
+- **On demand.** Files without any track get a "Generate with AI (Whisper)"
+  button in the subs menu; the player auto-selects the fresh track when done.
 
 ## Adding new media later
 
@@ -77,13 +126,20 @@ Everything degrades gracefully per machine: no TMDB key → step 2 is skipped;
 no Whisper venv or no GPU → step 4 is skipped. Manual passes still work
 (`npm run scan`, `npm run subs`) and are resumable.
 
+## Player shortcuts
+
+`Space` play/pause · `N` next episode · `C` subtitle menu · `M` mute ·
+`F` fullscreen · `Esc` back · arrow keys seek/volume.
+
 ## Layout
 
 - `server.js` + `src/` — Express server, SQLite library DB (`data/library.db`),
   streaming with range requests, NVENC "compatibility mode" fallback for
   codecs the browser can't decode.
 - `public/` — the UI.
-- `tools/` — scan/rename/subs/whisper CLIs; Whisper lives in `tools/.venv`.
+- `tools/` — CLIs: `scan.mjs`, `rename.mjs`, `thumbs.mjs`, `tmdb-sync.mjs`,
+  `subs-all.mjs` (the subtitle pass), `subs-ai-only.mjs` (one-off migration to
+  AI-only subtitles), `prune-subs.mjs`; Whisper lives in `tools/.venv`.
 
 ## Notes
 
@@ -95,3 +151,6 @@ no Whisper venv or no GPU → step 4 is skipped. Manual passes still work
   with NVENC (auto-detected at startup; CPU x264 fallback). Files the browser
   can't hardware-decode (e.g. 4K 10-bit HEVC) are routed straight to
   transcode without trying the faster modes first.
+- Whisper transcription is sequential and can take a while per file; the UI
+  shows "AI queued / AI transcribing" badges, and finished tracks appear
+  automatically without a reload.
