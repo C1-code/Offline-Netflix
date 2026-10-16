@@ -7,14 +7,7 @@ db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
 
 
-// --- lightweight migrations ---
-{
-  const cols = db.prepare(`PRAGMA table_info(files)`).all().map((c) => c.name);
-  if (!cols.includes('vcodec')) db.exec(`ALTER TABLE files ADD COLUMN vcodec TEXT`);
-  if (!cols.includes('acodec')) db.exec(`ALTER TABLE files ADD COLUMN acodec TEXT`);
-  if (!cols.includes('vcodec_str')) db.exec(`ALTER TABLE files ADD COLUMN vcodec_str TEXT`);
-  if (!cols.includes('acodec_str')) db.exec(`ALTER TABLE files ADD COLUMN acodec_str TEXT`);
-}
+// --- schema (all IF NOT EXISTS, so safe on existing libraries) ---
 db.exec(`
 CREATE TABLE IF NOT EXISTS titles (
   id INTEGER PRIMARY KEY,
@@ -89,6 +82,18 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 `);
+
+// --- lightweight migrations (must run AFTER the tables exist — on a fresh
+//     clone the schema above is what creates them) ---
+{
+  const cols = db.prepare(`PRAGMA table_info(files)`).all().map((c) => c.name);
+  if (cols.length > 0) {
+    if (!cols.includes('vcodec')) db.exec(`ALTER TABLE files ADD COLUMN vcodec TEXT`);
+    if (!cols.includes('acodec')) db.exec(`ALTER TABLE files ADD COLUMN acodec TEXT`);
+    if (!cols.includes('vcodec_str')) db.exec(`ALTER TABLE files ADD COLUMN vcodec_str TEXT`);
+    if (!cols.includes('acodec_str')) db.exec(`ALTER TABLE files ADD COLUMN acodec_str TEXT`);
+  }
+}
 
 export const q = {
   getTitle: db.prepare(`SELECT * FROM titles WHERE id = ?`),
