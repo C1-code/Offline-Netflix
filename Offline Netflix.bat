@@ -31,8 +31,9 @@ if exist "%~dp0server.js" (
   for /f "usebackq delims=" %%i in (`wsl.exe -e wslpath -a "%~dp0ZZDUMMYZZ" 2^>nul`) do set "REPO=%%i"
   set "REPO=!REPO:/ZZDUMMYZZ=!"
 ) else (
-  wsl.exe -e test -f /home/elias/offline-netflix/server.js >nul 2>&1
-  if not errorlevel 1 set "REPO=/home/elias/offline-netflix"
+  for /f "usebackq delims=" %%i in (`wsl.exe -e bash -c "echo $HOME/offline-netflix" 2^>nul`) do set "REPO=%%i"
+  wsl.exe -e test -f "!REPO!/server.js" >nul 2>&1
+  if errorlevel 1 set "REPO="
 )
 if not defined REPO (
   echo Could not find the offline-netflix repo.

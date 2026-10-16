@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Netflix-style frontend for your local media library",
+  "license": "MIT",
   "scripts": {
     "start": "node server.js",
     "scan": "node tools/scan.mjs",

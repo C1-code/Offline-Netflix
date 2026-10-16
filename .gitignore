@@ -5,4 +5,5 @@ config.json
 *.log
 tools/.venv/
 tools/bin/
+__pycache__/
 

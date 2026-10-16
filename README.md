@@ -70,6 +70,14 @@ cd offline-netflix
 npm run scan && npm start
 ```
 
+## Security note
+
+This is a single-user, home-LAN app: the server has **no authentication**, and
+the Settings page lets any client point the scanner at any folder and read the
+TMDB key. It is meant to be accessed from `localhost` (or trusted devices on
+your own network) only — do **not** port-forward it or expose it to untrusted
+networks. If you need remote access, put it behind a VPN (e.g. Tailscale/WireGuard).
+
 ## Daily use
 
 Double-click **Offline Netflix** on your Desktop (a copy of `Offline Netflix.bat`
