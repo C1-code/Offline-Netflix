@@ -5,6 +5,10 @@
   "tmdbLanguage": "en",
   "whisperModel": "large-v3-turbo",
   "whisperLanguage": "auto",
+  "subsDiarize": true,
+  "whisperHfToken": "",
+  "ollamaHost": "http://127.0.0.1:11434",
+  "subsNamingModel": "",
   "transcodeEnabled": true,
   "autoScanMinutes": 5
 }

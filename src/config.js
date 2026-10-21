@@ -13,6 +13,10 @@ const defaults = {
   tmdbLanguage: 'en',
   whisperModel: 'large-v3-turbo',
   whisperLanguage: 'auto',
+  subsDiarize: true,             // speaker-labeled, character-named cues (see transcribe.py --diarize)
+  whisperHfToken: '',            // Hugging Face token, one-time (pyannote gated model)
+  ollamaHost: 'http://127.0.0.1:11434',
+  subsNamingModel: '',           // empty = transcribe.py default ('qwen3:4b')
   transcodeEnabled: true,
   autoScanMinutes: 5,    // 0 = disable automatic library scanning
   venvPython: '',        // resolved below by detectWhisper()
@@ -38,6 +42,7 @@ function applyEnv() {
   if (process.env.MEDIA_PATH) cfg.mediaPath = process.env.MEDIA_PATH;
   if (process.env.PORT) cfg.port = parseInt(process.env.PORT, 10) || cfg.port;
   if (process.env.TMDB_API_KEY) cfg.tmdbApiKey = process.env.TMDB_API_KEY;
+  if (process.env.HF_TOKEN) cfg.whisperHfToken = process.env.HF_TOKEN;
   if (process.env.WHISPER_PYTHON) {
     cfg.venvPython = process.env.WHISPER_PYTHON;
     cfg.whisperAvailable = true;

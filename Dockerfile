@@ -28,7 +28,8 @@ ARG WITH_WHISPER=true
 RUN if [ "$WITH_WHISPER" = "true" ]; then \
       python3 -m venv tools/.venv \
       && tools/.venv/bin/pip install --no-cache-dir --upgrade pip wheel \
-      && tools/.venv/bin/pip install --no-cache-dir faster-whisper "av<19" "nvidia-cublas-cu12" "nvidia-cudnn-cu12"; \
+      && tools/.venv/bin/pip install --no-cache-dir faster-whisper "av<19" "nvidia-cublas-cu12" "nvidia-cudnn-cu12" \
+      && tools/.venv/bin/pip install --no-cache-dir pyannote.audio soundfile torchaudio; \
     fi
 
 # The image ships a `node` user with uid 1000 — the typical first user on

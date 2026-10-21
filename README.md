@@ -107,6 +107,14 @@ Priority per file:
 2. **Whisper large-v3-turbo** (`tools/transcribe.py`, CUDA on the RTX 3060;
    ~6 GB VRAM). In practice ~15–27× realtime, so a full library pass takes
    hours, not days. Falls back to CPU automatically if no GPU is usable.
+3. **Speaker-named cues** — every Whisper track is diarized (pyannote
+   speaker-diarization-3.1, one-time free Hugging Face token) and the
+   anonymous `SPEAKER_00` labels are resolved to character names by a local
+   LLM via Ollama (`subsNamingModel` in config.json), so cues look like
+   Netflix's: `CASSIAN: I don't need saving.` Speakers the model can't name
+   fall back to `SPEAKER 2:`. Any missing piece (no token, no Ollama) degrades
+   to plain subtitles automatically. To re-generate the whole library with
+   named subs: `npm run subs:regen` then `npm run subs -- --whisper-only`.
 
 Design decisions baked into the pipeline:
 

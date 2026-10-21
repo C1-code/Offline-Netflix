@@ -3,12 +3,18 @@
 //   2. Whisper (GPU) transcription for anything that still has none
 // External .srt/.ass files are never used (AI-only subtitles).
 // Resumable: files that already have tracks are skipped.
+//
+// --whisper-only  skip embedded extraction entirely — every file lacking a
+//                 track is sent straight to Whisper. Used together with
+//                 tools/subs-regen.mjs to force the whole library through the
+//                 diarized, speaker-named transcription pipeline.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, q } from '../src/db.js';
 import { extractEmbeddedSubs, transcribeFile } from '../src/subtitles.js';
 
+const whisperOnly = process.argv.includes('--whisper-only');
 const setStatus = db.prepare(`UPDATE files SET subtitle_status=? WHERE id=?`);
 
 const todo = q.allFiles.all().filter((f) => !f.hidden && f.kind !== 'extra');
@@ -23,17 +29,20 @@ for (const f of todo) {
     process.stdout.write(`\r[${done + skipped}/${todo.length}] skip (has subs): ${label.slice(0, 60)}${' '.repeat(10)}`);
     continue;
   }
-  // 1: embedded
-  try {
-    const got = await extractEmbeddedSubs(f);
-    if (got.length) {
-      setStatus.run('done', f.id);
-      extracted++;
-      done++;
-      process.stdout.write(`\r[${done + skipped}/${todo.length}] embedded -> ${got.length} track(s): ${label.slice(0, 60)}${' '.repeat(10)}`);
-      continue;
-    }
-  } catch { /* fall through to whisper */ }
+  // 1: embedded (skipped in --whisper-only mode: force everything through
+  // Whisper so the whole library gets speaker-named subtitles)
+  if (!whisperOnly) {
+    try {
+      const got = await extractEmbeddedSubs(f);
+      if (got.length) {
+        setStatus.run('done', f.id);
+        extracted++;
+        done++;
+        process.stdout.write(`\r[${done + skipped}/${todo.length}] embedded -> ${got.length} track(s): ${label.slice(0, 60)}${' '.repeat(10)}`);
+        continue;
+      }
+    } catch { /* fall through to whisper */ }
+  }
 
   // 2: whisper
   try {

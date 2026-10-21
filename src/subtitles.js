@@ -89,8 +89,18 @@ export async function transcribeFile(fileId) {
   // Whisper overwrites it instead of silently re-attaching it as "AI" output.
   fs.rmSync(out, { force: true });
   setFileStatus.run('transcribing', fileId);
-  await runWhisper(f.path, out);
-  q.addSubtrack.run({ file_id: fileId, path: out, lang: 'en', label: 'English (AI)', source: 'whisper', format: 'srt' });
+  // Show/episode hint so the LLM naming stage has context for who is who.
+  const title = q.getTitle.get(f.title_id);
+  const context = title
+    ? title.name + (f.season != null ? ` S${f.season}${f.episode != null ? `E${f.episode}` : ''}` : '')
+    : path.basename(f.path);
+  const stdout = await runWhisper(f.path, out, context);
+  const named = +((stdout.match(/named_speakers=(\d+)/) || [])[1] || 0);
+  q.addSubtrack.run({
+    file_id: fileId, path: out, lang: 'en',
+    label: named > 0 ? 'English (AI, named)' : 'English (AI)',
+    source: 'whisper', format: 'srt'
+  });
   setFileStatus.run('done', fileId);
   return out;
 }
@@ -117,7 +127,7 @@ function whisperEnv() {
   return env;
 }
 
-export function runWhisper(videoPath, outPath) {
+export function runWhisper(videoPath, outPath, context = '') {
   return new Promise((resolve, reject) => {
     // Machine without a Whisper venv (laptop, slim container): fail this one
     // file with a clear message instead of a spawn ENOENT deep in execFile.
@@ -126,13 +136,24 @@ export function runWhisper(videoPath, outPath) {
       return;
     }
     const { execFile } = childProcess;
-    execFile(cfg.venvPython, [
+    const args = [
       path.join(cfg.root, 'tools', 'transcribe.py'),
       videoPath, outPath,
       '--model', cfg.whisperModel,
       '--language', cfg.whisperLanguage,
       '--task', 'translate'  // always produce English, even for foreign audio
-    ], { timeout: 8 * 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, env: whisperEnv() }, (err, stdout, stderr) => {
+    ];
+    if (cfg.subsDiarize !== false) {
+      // Speaker-labeled, character-named cues. transcribe.py degrades to plain
+      // subtitles on its own when pyannote/HF token/Ollama are unavailable.
+      args.push('--diarize');
+      if (context) args.push('--context', context);
+      if (cfg.ollamaHost) args.push('--ollama-host', cfg.ollamaHost);
+      if (cfg.subsNamingModel) args.push('--naming-model', cfg.subsNamingModel);
+    }
+    const env = whisperEnv();
+    if (cfg.whisperHfToken) env.HF_TOKEN = cfg.whisperHfToken;
+    execFile(cfg.venvPython, args, { timeout: 8 * 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, env }, (err, stdout, stderr) => {
       if (err) { console.error('[whisper stderr]', (stderr || '').slice(-4000)); reject(err); }
       else resolve(stdout);
     });
