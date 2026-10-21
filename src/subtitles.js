@@ -154,6 +154,16 @@ export function runWhisper(videoPath, outPath, context = '') {
     const env = whisperEnv();
     if (cfg.whisperHfToken) env.HF_TOKEN = cfg.whisperHfToken;
     execFile(cfg.venvPython, args, { timeout: 8 * 60 * 60 * 1000, maxBuffer: 16 * 1024 * 1024, env }, (err, stdout, stderr) => {
+      // transcribe.py reports diagnostics on stderr ("diarizing on CUDA",
+      // "named 3 speaker(s)", "LLM naming failed ..."). Forward its milestone
+      // lines so a pass log shows naming results per file; full stderr (torch
+      // and pyannote warnings included) needs SUBS_VERBOSE=1.
+      const verbose = !!process.env.SUBS_VERBOSE;
+      for (const line of String(stderr || '').split('\n')) {
+        if (!line.trim()) continue;
+        if (verbose) console.error('[whisper]', line);
+        else if (line.startsWith('[transcribe]')) console.error(line);
+      }
       if (err) { console.error('[whisper stderr]', (stderr || '').slice(-4000)); reject(err); }
       else resolve(stdout);
     });
