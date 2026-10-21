@@ -105,8 +105,11 @@ Priority per file:
    served as WebVTT. Streams titled "Forced" are skipped: they only translate
    foreign-language dialogue and are never full coverage.
 2. **Whisper large-v3-turbo** (`tools/transcribe.py`, CUDA on the RTX 3060;
-   ~6 GB VRAM). In practice ~15–27× realtime, so a full library pass takes
-   hours, not days. Falls back to CPU automatically if no GPU is usable.
+   ~6 GB VRAM). Falls back to CPU automatically if no GPU is usable.
+   Transcription alone runs at ~15–27× realtime, but the default pipeline also
+   diarizes and names speakers, which puts the whole per-file cost at roughly
+   **3–5× realtime** (~5 min for a 21-min episode). Measured on real content:
+   245 h of media took ~77 h of wall time with the desktop in use.
 3. **Speaker-named cues** — every Whisper track is diarized (pyannote
    speaker-diarization-3.1, one-time free Hugging Face token) and the
    anonymous `SPEAKER_00` labels are resolved to character names by a local
@@ -115,6 +118,10 @@ Priority per file:
    fall back to `SPEAKER 2:`. Any missing piece (no token, no Ollama) degrades
    to plain subtitles automatically. To re-generate the whole library with
    named subs: `npm run subs:regen` then `npm run subs -- --whisper-only`.
+   To redo *only* the files whose naming fell back to `SPEAKER n:` —
+   e.g. after an Ollama/VRAM hiccup — `npm run subs:regen -- --unnamed`
+   (or `--label "English (AI)"`) resets just those tracks, and the next
+   `npm run subs -- --whisper-only` picks up those pending files only.
 
 Design decisions baked into the pipeline:
 
