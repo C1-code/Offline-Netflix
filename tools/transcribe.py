@@ -298,12 +298,18 @@ def name_speakers(cues, args, cast=None):
     )
     if cast:
         # "null when not on the list" reads as "nothing matches", and models
-        # answer all-null. Demand a best guess instead; unmatched answers are
-        # dropped afterwards anyway.
-        system += (" Every speaker is almost certainly one of the listed cast "
-                   "members: pick the best match for each one, copying the full "
-                   "name exactly as written. Answer null only when the excerpt "
-                   "gives no clue whatsoever.")
+        # answer all-null, so the default asks for a best guess; SUBS_NAMING_MODE
+        # =strict only names speakers the dialogue actually identifies.
+        mode = os.environ.get("SUBS_NAMING_MODE", "best")
+        if mode == "strict":
+            system += (" Name a speaker ONLY when the excerpt identifies them "
+                       "(someone says their name, or the scene makes it clear); "
+                       "answer null otherwise. Copy names exactly as written.")
+        else:
+            system += (" Every speaker is almost certainly one of the listed cast "
+                       "members: pick the best match for each one, copying the full "
+                       "name exactly as written. Answer null only when the excerpt "
+                       "gives no clue whatsoever.")
     else:
         system += " Use the name as it would appear in credits, e.g. \"Cassian\"."
     votes = {}

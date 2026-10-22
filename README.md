@@ -128,6 +128,11 @@ Priority per file:
    invented names are dropped, and one extra call retries the speakers still
    unnamed. A title with no cast on TMDB (documentaries) keeps the unconstrained
    behaviour. `subsCharacters: false` disables the constraint.
+   Naming trades coverage against confidence: by default the model must offer a
+   best match per speaker (more names, occasional wrong minor character);
+   `SUBS_NAMING_MODE=strict` only names speakers the dialogue identifies (fewer
+   names, higher precision). `SUBS_DEBUG_NAMING=1` prints the raw model answers,
+   token counts and the cast it was given — useful when a file comes out wrong.
    To re-generate the whole library with named subs: `npm run subs:regen` then
    `npm run subs -- --whisper-only`. Add `--title Community` to do one show
    first (run again without the flag for the rest — done files are skipped);
