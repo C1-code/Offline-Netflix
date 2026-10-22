@@ -50,6 +50,133 @@ async function download(url, dest) {
 const imgName = (tmdbId, kind, size, file) =>
   path.join(cfg.imagesDir, `tmdb-${tmdbId}-${kind}-${size}-${file}`);
 
+// --- canonical cast (speaker naming) ---------------------------------------
+
+// Ranks/titles that must not become the cue label: "Major Partagaz" is
+// addressed as Partagaz, not Major.
+const HONORIFICS = new Set([
+  'mr', 'mrs', 'ms', 'miss', 'mister', 'madam', 'madame', 'sir',
+  'dr', 'doctor', 'prof', 'professor', 'capt', 'captain', 'lt', 'lieutenant',
+  'sgt', 'sergeant', 'det', 'detective', 'officer', 'major', 'general',
+  'col', 'colonel', 'admiral', 'senator', 'supervisor', 'chef', 'dean',
+  'father', 'sister', 'brother', 'agent', 'director', 'president', 'king',
+  'queen', 'prince', 'princess', 'lord', 'lady', 'judge', 'nurse', 'coach',
+  'chief', 'commander', 'deputy', 'mayor', 'inspector', 'sheriff',
+  'constable', 'priest', 'reverend', 'chancellor', 'minister', 'chairman'
+]);
+
+// Cast entries that are not characters at all: documentaries list their
+// subjects as "Self", crowd roles are numbered, etc. Dropping these keeps the
+// naming prompt free of noise (and makes F1-style shows fall back cleanly).
+const NOT_A_CHARACTER = [
+  /^(self|himself|herself|themself|narrator|host|hostess|interviewer|announcer|voice|additional voices?|various)$/i,
+  /^board member\b/i,
+  /\bhuman being\b/i,
+  /#\d+$/,
+  /^number \d+$/i
+];
+
+/** Display name for a character, given the title kind. */
+function displayFor(plain, quoted, kind) {
+  if (quoted) return quoted;
+  const toks = plain.split(' ').filter(Boolean);
+  if (!toks.length) return plain;
+  const first = toks[0].toLowerCase().replace(/\.$/, '');
+  if (toks.length > 1 && HONORIFICS.has(first)) return toks.slice(1).join(' ');
+  if (toks.length === 1) return toks[0];
+  // Series read best on the familiar first name (Kendall, Abed, Cassian);
+  // movies read best on the surname (Einstein, Stark, Oppenheimer).
+  return kind === 'movie' ? toks[toks.length - 1] : toks[0];
+}
+
+/**
+ * Turn a TMDB character string into { name, display, aliases }.
+ *   "Siobhan 'Shiv' Roy"   -> name kept, display "Shiv"
+ *   "Tony Stark / Iron Man"-> name "Tony Stark", alias "Iron Man", display "Stark" (movie)
+ *   "B2EMO (voice)"        -> "B2EMO"
+ *   "Supervisor Lagret"    -> display "Lagret"
+ */
+export function parseCharacter(raw, kind = 'series') {
+  const cleaned = String(raw || '')
+    .replace(/\((?:voice|uncredited|credited|cameo|archive footage)[^)]*\)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || NOT_A_CHARACTER.some((re) => re.test(cleaned))) return null;
+  const parts = cleaned.split(/\s*\/\s*/).map((p) => p.trim()).filter(Boolean);
+  const name = parts[0];
+  const aliases = new Set(parts.slice(1));
+  // Quoted nicknames inside the name, e.g. Siobhan 'Shiv' Roy
+  for (const m of name.matchAll(/['"‘’“”]([^'"‘’“”]{2,30})['"‘’“”]/g)) aliases.add(m[1].trim());
+  const plain = name.replace(/['"‘’“”]/g, '').replace(/\s+/g, ' ').trim();
+  const quoted = aliases.size
+    ? [...aliases].filter((a) => a.length >= 2 && plain.toLowerCase().includes(a.toLowerCase()))[0]
+    : null;
+  const display = displayFor(plain, quoted, kind);
+  return {
+    name: name.replace(/\s+/g, ' ').trim() || plain,
+    display,
+    aliases: [...aliases].filter((a) => a && a.toLowerCase() !== display.toLowerCase())
+  };
+}
+
+/**
+ * Fetch cast credits and store them as this title's canonical character list.
+ * Series use aggregate_credits (whole-run cast, episodes>=5, ranked); movies use
+ * credits (billing order). Titles without cast (documentaries) end up with an
+ * empty list, and the naming stage then behaves as before.
+ * Returns the number of characters stored.
+ */
+export async function syncCharacters(t, { topN = 25 } = {}) {
+  if (!t.tmdb_id) return 0;
+  const data = t.kind === 'series'
+    ? await get(`/tv/${t.tmdb_id}/aggregate_credits`)
+    : await get(`/movie/${t.tmdb_id}/credits`);
+  const cast = data.cast || [];
+  const rows = (t.kind === 'series'
+    ? cast.filter((c) => (c.total_episode_count || 0) >= 5)
+        .sort((a, b) => (b.total_episode_count || 0) - (a.total_episode_count || 0))
+        .slice(0, topN)
+        .map((c) => ({ raw: c.roles?.[0]?.character || c.name, eps: c.total_episode_count || 0 }))
+    : cast.slice(0, topN).map((c) => ({ raw: c.character || c.name, eps: 1 }))
+  ).map((r) => ({ ...r, parsed: parseCharacter(r.raw, t.kind) }))
+   .filter((r) => r.parsed);
+
+  // Two characters sharing a short display ("Kendall" twice) would produce
+  // ambiguous cues — those fall back to the full name.
+  const byDisplay = new Map();
+  for (const r of rows) {
+    const k = r.parsed.display.toLowerCase();
+    byDisplay.set(k, (byDisplay.get(k) || 0) + 1);
+  }
+  for (const r of rows) {
+    if (byDisplay.get(r.parsed.display.toLowerCase()) > 1) r.parsed.display = r.parsed.name;
+  }
+
+  // Hand-edited rows (source='manual') win: they survive a refresh untouched.
+  const manual = new Set(
+    db.prepare(`SELECT name FROM title_characters WHERE title_id=? AND source='manual'`).all(t.id)
+      .map((r) => r.name.toLowerCase())
+  );
+  db.prepare(`DELETE FROM title_characters WHERE title_id=? AND source='tmdb'`).run(t.id);
+  const seen = new Set();
+  let stored = 0;
+  for (const r of rows) {
+    const key = r.parsed.name.toLowerCase();
+    if (seen.has(key) || manual.has(key)) continue;
+    seen.add(key);
+    q.upsertCharacter.run({
+      title_id: t.id,
+      name: r.parsed.name,
+      display: r.parsed.display,
+      aliases: JSON.stringify(r.parsed.aliases),
+      episodes: r.eps,
+      source: 'tmdb'
+    });
+    stored++;
+  }
+  return stored;
+}
+
 export async function syncSeries(t) {
   const search = await get('/search/tv', { query: t.name });
   const results = search.results || [];
@@ -81,6 +208,8 @@ export async function syncSeries(t) {
         .run(ep.name || null, ep.overview || null, still, t.id, season, ep.episode_number);
     }
   }
+  // Cast for speaker naming. Optional: a failure here must not fail the sync.
+  try { await syncCharacters({ id: t.id, kind: 'series', tmdb_id: best.id }); } catch { /* no cast */ }
   return true;
 }
 
@@ -99,7 +228,26 @@ export async function syncMovie(t) {
     overview: best.overview || null,
     poster: poster || null, backdrop: backdrop || null, tmdb_id: best.id
   });
+  try { await syncCharacters({ id: t.id, kind: 'movie', tmdb_id: best.id }); } catch { /* no cast */ }
   return true;
+}
+
+/** Fill title_characters for every title that has a TMDB id (cast only, no posters). */
+export async function syncAllCharacters({ refresh = false, topN = 25 } = {}) {
+  const titles = q.allTitles.all().filter((t) => t.tmdb_id);
+  let ok = 0, empty = 0, fail = 0, chars = 0;
+  for (const t of titles) {
+    const has = db.prepare(`SELECT COUNT(*) n FROM title_characters WHERE title_id=?`).get(t.id).n;
+    if (has && !refresh) { ok++; continue; }
+    try {
+      const n = await syncCharacters(t, { topN });
+      if (n) { ok++; chars += n; console.log(`cast ${t.kind}: ${t.name} — ${n} character(s)`); }
+      else { empty++; console.log(`NO CAST ${t.kind}: ${t.name}`); }
+    } catch (e) {
+      fail++; console.log(`ERROR ${t.kind}: ${t.name} - ${e.message}`);
+    }
+  }
+  return { ok, empty, fail, chars, total: titles.length };
 }
 
 export async function syncAll() {

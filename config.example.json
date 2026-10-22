@@ -6,6 +6,7 @@
   "whisperModel": "large-v3-turbo",
   "whisperLanguage": "auto",
   "subsDiarize": true,
+  "subsCharacters": true,
   "whisperHfToken": "",
   "ollamaHost": "http://127.0.0.1:11434",
   "subsNamingModel": "",

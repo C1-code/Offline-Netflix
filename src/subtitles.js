@@ -94,7 +94,7 @@ export async function transcribeFile(fileId) {
   const context = title
     ? title.name + (f.season != null ? ` S${f.season}${f.episode != null ? `E${f.episode}` : ''}` : '')
     : path.basename(f.path);
-  const stdout = await runWhisper(f.path, out, context);
+  const stdout = await runWhisper(f.path, out, context, castArg(f.title_id));
   const named = +((stdout.match(/named_speakers=(\d+)/) || [])[1] || 0);
   q.addSubtrack.run({
     file_id: fileId, path: out, lang: 'en',
@@ -127,7 +127,23 @@ function whisperEnv() {
   return env;
 }
 
-export function runWhisper(videoPath, outPath, context = '') {
+/**
+ * Canonical cast for a title as the compact JSON transcribe.py --characters
+ * expects. Empty string when the title has none (documentaries) or the feature
+ * is switched off — the naming stage then behaves as it did before.
+ */
+export function castArg(titleId) {
+  if (cfg.subsCharacters === false || titleId == null) return '';
+  const rows = q.charactersForTitle.all(titleId);
+  if (!rows.length) return '';
+  return JSON.stringify(rows.map((r) => ({
+    name: r.name,
+    display: r.display || r.name,
+    aliases: JSON.parse(r.aliases || '[]')
+  })));
+}
+
+export function runWhisper(videoPath, outPath, context = '', characters = '') {
   return new Promise((resolve, reject) => {
     // Machine without a Whisper venv (laptop, slim container): fail this one
     // file with a clear message instead of a spawn ENOENT deep in execFile.
@@ -148,6 +164,7 @@ export function runWhisper(videoPath, outPath, context = '') {
       // subtitles on its own when pyannote/HF token/Ollama are unavailable.
       args.push('--diarize');
       if (context) args.push('--context', context);
+      if (characters) args.push('--characters', characters);
       if (cfg.ollamaHost) args.push('--ollama-host', cfg.ollamaHost);
       if (cfg.subsNamingModel) args.push('--naming-model', cfg.subsNamingModel);
     }

@@ -8,6 +8,10 @@
 //                 track is sent straight to Whisper. Used together with
 //                 tools/subs-regen.mjs to force the whole library through the
 //                 diarized, speaker-named transcription pipeline.
+//
+// --title <name>  only process files of that title (repeatable, or one
+//                 comma-separated list). Lets you do Community first, then run
+//                 again with no filter for the rest — done files are skipped.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,7 +21,32 @@ import { extractEmbeddedSubs, transcribeFile } from '../src/subtitles.js';
 const whisperOnly = process.argv.includes('--whisper-only');
 const setStatus = db.prepare(`UPDATE files SET subtitle_status=? WHERE id=?`);
 
-const todo = q.allFiles.all().filter((f) => !f.hidden && f.kind !== 'extra');
+const dryRun = process.argv.includes('--dry-run');
+const only = process.argv
+  .flatMap((a, i, arr) => (a === '--title' ? [arr[i + 1]] : []))
+  .filter(Boolean)
+  .flatMap((v) => v.split(','))
+  .map((v) => v.trim().toLowerCase())
+  .filter(Boolean);
+const titleName = new Map(q.allTitles.all().map((t) => [t.id, t.name]));
+const matchesOnly = (f) => !only.length ||
+  only.some((want) => (titleName.get(f.title_id) || '').toLowerCase().includes(want));
+
+const todo = q.allFiles.all().filter((f) => !f.hidden && f.kind !== 'extra' && matchesOnly(f));
+if (only.length) {
+  console.log(`Title filter: ${[...new Set(only)].join(', ')} — ${todo.length} file(s) in scope`);
+  if (!todo.length) {
+    console.log('No files matched. Check the title name with: npm run chars:list');
+    process.exit(0);
+  }
+}
+if (dryRun) {
+  const need = todo.filter((f) => !q.subtracksOfFile.all(f.id).length);
+  const mins = need.reduce((n, f) => n + (f.duration || 0), 0) / 60;
+  console.log(`Dry run: ${need.length} of ${todo.length} file(s) would be transcribed ` +
+    `(${Math.round(mins)} min of media).`);
+  process.exit(0);
+}
 let done = 0, extracted = 0, transcribed = 0, failed = 0, skipped = 0;
 
 for (const f of todo) {

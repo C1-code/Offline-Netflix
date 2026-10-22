@@ -81,6 +81,19 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Canonical cast per title, seeded from TMDB credits (see src/tmdb.js
+-- syncCharacters). The speaker-naming stage hands these to the LLM so cues use
+-- one consistent name per character instead of whatever the model invents.
+CREATE TABLE IF NOT EXISTS title_characters (
+  title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+  name     TEXT NOT NULL,           -- canonical, e.g. "Siobhan 'Shiv' Roy"
+  display  TEXT,                    -- what goes in cues, e.g. "Shiv"
+  aliases  TEXT,                    -- JSON array: ["Shiv","Siobhan"]
+  episodes INTEGER,                 -- TMDB total_episode_count (ranking)
+  source   TEXT,                    -- tmdb | manual
+  PRIMARY KEY (title_id, name)
+);
 `);
 
 // --- lightweight migrations (must run AFTER the tables exist — on a fresh
@@ -147,5 +160,11 @@ export const q = {
   renameLogAll: db.prepare(`SELECT * FROM rename_log ORDER BY id`),
 
   setSetting: db.prepare(`INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`),
-  getSetting: db.prepare(`SELECT value FROM settings WHERE key = ?`)
+  getSetting: db.prepare(`SELECT value FROM settings WHERE key = ?`),
+
+  charactersForTitle: db.prepare(`SELECT * FROM title_characters WHERE title_id = ? ORDER BY episodes DESC, name`),
+  upsertCharacter: db.prepare(`INSERT INTO title_characters (title_id, name, display, aliases, episodes, source)
+    VALUES (@title_id,@name,@display,@aliases,@episodes,@source)
+    ON CONFLICT(title_id,name) DO UPDATE SET display=excluded.display, aliases=excluded.aliases,
+      episodes=excluded.episodes, source=excluded.source`)
 };

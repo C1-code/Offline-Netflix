@@ -96,6 +96,11 @@ is also in this folder). The library loads at http://localhost:8420.
 4. TMDB metadata (posters, episode titles, proper display names): paste a free
    API key from https://www.themoviedb.org/settings/api into `config.json`
    (`tmdbApiKey`), then `npm run tmdb:sync` (internet needed once).
+5. Optional but recommended: `npm run chars:sync` — caches each title's cast
+   (from the same TMDB key) so speaker naming is constrained to real characters.
+   `npm run chars:list` shows the derived on-screen names;
+   `npm run chars -- --set "Community" "Ben Chang=Chang"` overrides one (hand
+   edits stick across `chars:sync --all` refreshes).
 
 ## How subtitles work
 
@@ -114,10 +119,19 @@ Priority per file:
    speaker-diarization-3.1, one-time free Hugging Face token) and the
    anonymous `SPEAKER_00` labels are resolved to character names by a local
    LLM via Ollama (`subsNamingModel` in config.json), so cues look like
-   Netflix's: `CASSIAN: I don't need saving.` Speakers the model can't name
+   Netflix's: `Cassian: I don't need saving.` Speakers the model can't name
    fall back to `SPEAKER 2:`. Any missing piece (no token, no Ollama) degrades
-   to plain subtitles automatically. To re-generate the whole library with
-   named subs: `npm run subs:regen` then `npm run subs -- --whisper-only`.
+   to plain subtitles automatically.
+   Naming is **constrained to each title's cast** when one is cached
+   (`npm run chars:sync`, from TMDB credits): the model may only pick from that
+   list, answers are snapped to the closest character (`Ken` → `Kendall Roy`),
+   invented names are dropped, and one extra call retries the speakers still
+   unnamed. A title with no cast on TMDB (documentaries) keeps the unconstrained
+   behaviour. `subsCharacters: false` disables the constraint.
+   To re-generate the whole library with named subs: `npm run subs:regen` then
+   `npm run subs -- --whisper-only`. Add `--title Community` to do one show
+   first (run again without the flag for the rest — done files are skipped);
+   `--dry-run` prints what a pass would do.
    To redo *only* the files whose naming fell back to `SPEAKER n:` —
    e.g. after an Ollama/VRAM hiccup — `npm run subs:regen -- --unnamed`
    (or `--label "English (AI)"`) resets just those tracks, and the next

@@ -8,6 +8,7 @@ Usage: transcribe.py <input_video> <output_srt> [--model large-v3-turbo] [--lang
                      [--diarize] (speaker-labeled, character-named cues)
 """
 import argparse
+import difflib
 import glob
 import json
 import os
@@ -179,9 +180,20 @@ def split_by_speaker(seg, turns):
 # ---------- LLM speaker naming via local Ollama ----------
 
 def ollama_name_chunk(host, model, system, user_prompt, timeout=900):
+    # num_ctx matters a lot: this model's default is 131072, which allocates a
+    # huge KV cache and spills the MoE to CPU (minutes per call). A small
+    # window keeps generation fast and fits the whole cast + one chunk easily.
+    options = {
+        "temperature": 0,
+        "num_ctx": int(os.environ.get("SUBS_NAMING_CTX", 8192)),
+        "num_predict": int(os.environ.get("SUBS_NAMING_PREDICT", 700)),
+    }
     body = json.dumps({
-        "model": model, "stream": False, "format": "json",
-        "options": {"temperature": 0},
+        # think=false is essential on thinking-capable models (gemma4 here):
+        # otherwise the hidden reasoning consumes the whole num_predict budget
+        # and the visible answer comes back as "{}".
+        "model": model, "stream": False, "format": "json", "think": False,
+        "options": options,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user_prompt}],
     }).encode()
@@ -190,6 +202,12 @@ def ollama_name_chunk(host, model, system, user_prompt, timeout=900):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
     content = (data.get("message") or {}).get("content") or "{}"
+    if os.environ.get("SUBS_DEBUG_NAMING"):
+        print(f"[transcribe] prompt {len(user_prompt)} chars -> "
+              f"prompt_eval={data.get('prompt_eval_count')} tokens, "
+              f"eval={data.get('eval_count')} tokens, "
+              f"done_reason={data.get('done_reason')}, "
+              f"reply {len(content)} chars", file=sys.stderr)
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
@@ -203,36 +221,114 @@ def ollama_name_chunk(host, model, system, user_prompt, timeout=900):
     return parsed if isinstance(parsed, dict) else {}
 
 
-def name_speakers(cues, args):
-    """Map diarization labels (SPEAKER_00...) to character names from context.
+def _norm_name(s):
+    """Lowercase, drop punctuation, collapse spaces — for alias matching."""
+    return re.sub(r"[^a-z0-9 ]+", " ", str(s).lower()).strip()
+
+
+def match_cast(raw, cast):
+    """Find the cast entry a model-supplied name refers to, or None.
+
+    Tries exact canonical/alias matches, then token containment ("Kendall" vs
+    "Kendall Roy"), then a fuzzy ratio — so "Ken" and "Kendall" both land on
+    Kendall Roy, while an invented name ("Linus Moss") matches nothing.
+    """
+    n = _norm_name(raw)
+    if not n or not cast:
+        return None
+    variants = []
+    for c in cast:
+        for v in [c.get("name")] + list(c.get("aliases") or []):
+            nv = _norm_name(v)
+            if nv:
+                variants.append((nv, c))
+    for nv, c in variants:
+        if n == nv:
+            return c
+    ntok = set(n.split())
+    # Same leading name but garbled rest ("Greg Egg" for "Greg Hirsch"): accept
+    # when that first token identifies exactly one cast member.
+    if len(ntok) > 1:
+        first = n.split()[0]
+        leads = {id(c): c for nv, c in variants if nv.split() and nv.split()[0] == first}
+        if len(leads) == 1:
+            return next(iter(leads.values()))
+    for nv, c in variants:
+        ctok = set(nv.split())
+        if ctok and (ntok <= ctok or ctok <= ntok):
+            return c
+    best_ratio, best = 0.0, None
+    for nv, c in variants:
+        r = difflib.SequenceMatcher(None, n, nv).ratio()
+        if r > best_ratio:
+            best_ratio, best = r, c
+    return best if best_ratio >= 0.85 else None
+
+
+def cast_block(cast):
+    """Prompt lines describing the canonical cast (names plus known aliases)."""
+    lines = []
+    for c in cast:
+        aka = [a for a in (c.get("aliases") or [])
+               if a and a.lower() != _norm_name(c.get("name"))]
+        lines.append(f"- {c['name']}" + (f" (also: {', '.join(aka)})" if aka else ""))
+    return "\n".join(lines)
+
+
+def name_speakers(cues, args, cast=None):
+    """Map diarization labels (SPEAKER_00...) to character names.
 
     The transcript is chunked so an episode of any length fits the model's
     context; names found in earlier chunks are passed along as hints so the
     mapping stays consistent. Only dialogue text is sent, nothing else.
+
+    When a canonical cast list is available (title_characters, see
+    tools/characters.mjs) the model must choose from it, answers are snapped to
+    the closest cast entry, and invented names are dropped.
     """
     if not cues:
         return {}
+    cast = cast or []
     system = (
         "You are labeling the transcript of one TV episode. Speakers are "
         "anonymized as SPEAKER_00, SPEAKER_01, ... Identify which character each "
         "speaker is, using how characters address each other by name and the "
         "situation. Reply with ONLY a JSON object mapping every speaker id to a "
-        "character name (or null when you cannot tell). Use the name as it would "
-        "appear in credits, e.g. \"Cassian\". Never invent speaker ids."
+        "character name (or null when you cannot tell). Never invent speaker ids."
     )
+    if cast:
+        # "null when not on the list" reads as "nothing matches", and models
+        # answer all-null. Demand a best guess instead; unmatched answers are
+        # dropped afterwards anyway.
+        system += (" Every speaker is almost certainly one of the listed cast "
+                   "members: pick the best match for each one, copying the full "
+                   "name exactly as written. Answer null only when the excerpt "
+                   "gives no clue whatsoever.")
+    else:
+        system += " Use the name as it would appear in credits, e.g. \"Cassian\"."
     votes = {}
     hint = {}
-    CHUNK = 250
+    CHUNK = 150
     for i in range(0, len(cues), CHUNK):
         chunk = cues[i:i + CHUNK]
-        lines = [f"[{srt_ts(c['start'])[:8]}] {c['speaker']}: {c['text']}" for c in chunk]
-        user = (f"Show: {args.context or 'Unknown'}\n\n"
-                "Transcript excerpt:\n" + "\n".join(lines) +
-                "\n\nJSON mapping of every SPEAKER id above to a character name or null:")
+        lines = [f"[{srt_ts(c['start'])[:8]}] {c['speaker']}: {c['text'][:160]}" for c in chunk]
+        user = f"Show: {args.context or 'Unknown'}\n\nTranscript excerpt:\n" + "\n".join(lines)
+        if cast:
+            user += "\n\nCast (use exactly these full names):\n" + cast_block(cast)
+            user += ('\n\nExample answer shape: {"SPEAKER_00": "Cassian Andor", '
+                     '"SPEAKER_01": "Luthen Rael"}')
+        user += "\n\nJSON mapping of every SPEAKER id above to a character name or null:"
         if hint:
             user += "\n\nAlready identified in earlier excerpts (keep consistent): " + json.dumps(hint)
         try:
-            for spk, nm in ollama_name_chunk(args.ollama_host, args.naming_model, system, user).items():
+            answer = ollama_name_chunk(args.ollama_host, args.naming_model, system, user)
+            if os.environ.get("SUBS_DEBUG_NAMING"):
+                print(f"[transcribe] raw model answer ({len(answer)} key(s)): "
+                      f"{json.dumps(answer)[:600]}", file=sys.stderr)
+            for spk, nm in answer.items():
+                # Models drift between "SPEAKER_9", "SPEAKER 9" and "speaker-9";
+                # normalize or the vote is silently lost.
+                spk = re.sub(r"\s*[- ]\s*", "_", str(spk).strip()).upper()
                 if isinstance(nm, str) and nm.strip():
                     nm = nm.strip()
                     votes.setdefault(spk, {})
@@ -241,9 +337,52 @@ def name_speakers(cues, args):
         except Exception as e:
             print(f"[transcribe] LLM naming failed ({e}) — generic labels kept", file=sys.stderr)
             break
-    resolved = {spk: max(names.items(), key=lambda kv: kv[1])[0] for spk, names in votes.items()}
-    print(f"[transcribe] named {len(resolved)} speaker(s) via {args.naming_model}", file=sys.stderr)
-    return resolved
+    # Resolve each speaker to a cast entry: most-voted name that actually
+    # matches someone in the list. Without a list, keep the model's answer.
+    resolved = {}
+    used = set()
+    for spk, names in votes.items():
+        for nm, _count in sorted(names.items(), key=lambda kv: -kv[1]):
+            c = match_cast(nm, cast) if cast else {"name": nm, "display": nm}
+            if c:
+                resolved[spk] = c
+                used.add(c["name"])
+                break
+
+    # Second chance: speakers the first pass left blank, matched against cast
+    # members nobody claimed yet. Cheap, and it rescues episodes whose early
+    # dialogue never names anyone.
+    all_spk = sorted({c["speaker"] for c in cues if c["speaker"]})
+    unassigned = [s for s in all_spk if s not in resolved]
+    spare = [c for c in cast if c["name"] not in used]
+    if cast and spare and unassigned:
+        lines = [f"[{srt_ts(c['start'])[:8]}] {c['speaker']}: {c['text']}" for c in cues[:80]]
+        user = (f"Show: {args.context or 'Unknown'}\n\n"
+                "Unassigned speakers: " + ", ".join(unassigned) + "\n\n"
+                "Cast members not yet matched to anyone:\n" + cast_block(spare) + "\n\n"
+                "Transcript excerpt:\n" + "\n".join(lines) +
+                "\n\nJSON mapping of any of the unassigned speakers above to one of "
+                "those cast members (null if unsure):")
+        try:
+            extra = ollama_name_chunk(args.ollama_host, args.naming_model, system, user)
+            if os.environ.get("SUBS_DEBUG_NAMING"):
+                print(f"[transcribe] second chance answer: {json.dumps(extra)[:400]}",
+                      file=sys.stderr)
+            for spk, nm in extra.items():
+                spk = re.sub(r"\s*[- ]\s*", "_", str(spk).strip()).upper()
+                if spk in resolved or not isinstance(nm, str) or not nm.strip():
+                    continue
+                c = match_cast(nm.strip(), spare)
+                if c and c["name"] not in used:
+                    resolved[spk] = c
+                    used.add(c["name"])
+        except Exception as e:
+            print(f"[transcribe] second-chance naming failed ({e})", file=sys.stderr)
+
+    out = {spk: (c.get("display") or c["name"]) for spk, c in resolved.items()}
+    print(f"[transcribe] named {len(out)}/{len(all_spk)} speaker(s) via {args.naming_model}"
+          + (f" (cast {len(cast)})" if cast else ""), file=sys.stderr)
+    return out
 
 
 def srt_ts(seconds: float) -> str:
@@ -268,7 +407,18 @@ def main():
     ap.add_argument("--ollama-host", default=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"))
     ap.add_argument("--naming-model", default=os.environ.get("SUBS_NAMING_MODEL", "qwen3:4b"))
     ap.add_argument("--context", default="", help="show/episode hint for speaker naming")
+    ap.add_argument("--characters", default="",
+                    help="JSON array of canonical cast entries "
+                         "[{\"name\":..., \"display\":..., \"aliases\":[...]}]; "
+                         "constrains naming to these people (see tools/characters.mjs)")
     args = ap.parse_args()
+    cast = []
+    if args.characters:
+        try:
+            cast = [c for c in json.loads(args.characters) if isinstance(c, dict) and c.get("name")]
+        except json.JSONDecodeError:
+            print("[transcribe] --characters is not valid JSON — ignoring cast list",
+                  file=sys.stderr)
 
     model = load_model(args.model)
     lang = None if (args.language or "auto").lower() in ("auto", "") else args.language
@@ -346,7 +496,7 @@ def main():
             print("[transcribe] freed whisper model for the naming stage", file=sys.stderr)
         except Exception:
             pass
-        names = name_speakers(cues, args)
+        names = name_speakers(cues, args, cast)
         named = len(names)
         for c in cues:
             if c["speaker"] is not None:

@@ -14,6 +14,7 @@ const defaults = {
   whisperModel: 'large-v3-turbo',
   whisperLanguage: 'auto',
   subsDiarize: true,             // speaker-labeled, character-named cues (see transcribe.py --diarize)
+  subsCharacters: true,          // constrain naming to each title's TMDB cast (tools/characters.mjs)
   whisperHfToken: '',            // Hugging Face token, one-time (pyannote gated model)
   ollamaHost: 'http://127.0.0.1:11434',
   subsNamingModel: '',           // empty = transcribe.py default ('qwen3:4b')
