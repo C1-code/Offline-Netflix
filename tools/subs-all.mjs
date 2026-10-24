@@ -15,8 +15,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { db, q } from '../src/db.js';
 import { extractEmbeddedSubs, transcribeFile } from '../src/subtitles.js';
+
+const dataDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
+const errorLog = path.join(dataDir, 'subs-errors.log');
 
 const whisperOnly = process.argv.includes('--whisper-only');
 const setStatus = db.prepare(`UPDATE files SET subtitle_status=? WHERE id=?`);
@@ -83,14 +87,23 @@ for (const f of todo) {
     const mins = ((f.duration || 0) / 60).toFixed(0);
     process.stdout.write(`\r[${done + skipped}/${todo.length}] whisper (${mins}min in ${(Date.now() - t0) / 1000 | 0}s): ${label.slice(0, 60)}${' '.repeat(10)}`);
   } catch (e) {
+    const detail = (e && (e.stack || e.message)) || String(e);
     setStatus.run('failed', f.id);
     failed++;
     done++;
     process.stdout.write(`\r[${done + skipped}/${todo.length}] FAILED: ${label.slice(0, 60)}${' '.repeat(10)}\n`);
-    console.error('   ', e.message?.slice(0, 200));
+    console.error('   ', detail.replace(/\s+/g, ' ').slice(0, 400));
+    // Console output is lost as soon as the shell that started the pass is
+    // gone (or /tmp is cleared). Keep a durable, greppable record so a bulk
+    // failure can be diagnosed afterwards.
+    try {
+      fs.appendFileSync(errorLog,
+        `${new Date().toISOString()}\t${f.path}\t${detail.replace(/\s+/g, ' ').slice(0, 1500)}\n`);
+    } catch { /* logging must never break the pass */ }
   }
 }
 
 console.log(`\n\nSubtitle pass complete: ${extracted} from embedded streams, ${transcribed} via Whisper, ` +
   `${skipped} already had subs, ${failed} failed.`);
+if (failed) console.log(`Failure details appended to ${errorLog}`);
 console.log('Re-run this command any time — it only processes files that still lack subtitles.');

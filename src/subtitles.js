@@ -84,17 +84,31 @@ export async function transcribeFile(fileId) {
   const f = q.fileById.get(fileId);
   if (!f) throw new Error('file not found');
   const out = path.join(path.dirname(f.path), path.basename(f.path, path.extname(f.path)) + '.en.srt');
-  // Always transcribe fresh: a <video>.en.srt that already exists on disk is a
-  // stale external download (the AI-only pipeline never trusts those), so
-  // Whisper overwrites it instead of silently re-attaching it as "AI" output.
-  fs.rmSync(out, { force: true });
+  // Write to a .part file and only move it into place once a complete
+  // transcript exists. A stale external <video>.en.srt is still overwritten on
+  // success (the AI-only pipeline never trusts those), but a failed or killed
+  // run can no longer leave the file deleted or half-written — the previous
+  // track, if any, stays exactly as it was.
+  const part = out + '.part';
+  fs.rmSync(part, { force: true });
   setFileStatus.run('transcribing', fileId);
   // Show/episode hint so the LLM naming stage has context for who is who.
   const title = q.getTitle.get(f.title_id);
+  // Episode title + plot summary give the naming model enough scene context
+  // to tell the regulars apart ("Jeff takes a film class..." identifies who is
+  // in the classroom scenes); the show name alone is not enough.
   const context = title
-    ? title.name + (f.season != null ? ` S${f.season}${f.episode != null ? `E${f.episode}` : ''}` : '')
+    ? title.name + (f.season != null ? ` S${f.season}${f.episode != null ? `E${f.episode}` : ''}` : '') +
+      (f.ep_name ? ` — ${f.ep_name}` : '') +
+      (f.ep_overview ? `. ${String(f.ep_overview).replace(/\s+/g, ' ').slice(0, 400)}` : '')
     : path.basename(f.path);
-  const stdout = await runWhisper(f.path, out, context, castArg(f.title_id));
+  let stdout;
+  try {
+    stdout = await runWhisper(f.path, part, context, castArg(f));
+    fs.renameSync(part, out);
+  } finally {
+    fs.rmSync(part, { force: true });
+  }
   const named = +((stdout.match(/named_speakers=(\d+)/) || [])[1] || 0);
   q.addSubtrack.run({
     file_id: fileId, path: out, lang: 'en',
@@ -128,19 +142,28 @@ function whisperEnv() {
 }
 
 /**
- * Canonical cast for a title as the compact JSON transcribe.py --characters
- * expects. Empty string when the title has none (documentaries) or the feature
- * is switched off — the naming stage then behaves as it did before.
+ * Canonical cast for one file as the compact JSON transcribe.py --characters
+ * expects. Prefers the episode's own credits (regulars + guest stars), because
+ * a whole-run list omits one-episode characters and forces the model to name
+ * them after somebody from another season. Falls back to the title cast when a
+ * title has no episode credits yet. Empty string when there is no cast at all
+ * (documentaries) or the feature is switched off.
  */
-export function castArg(titleId) {
-  if (cfg.subsCharacters === false || titleId == null) return '';
-  const rows = q.charactersForTitle.all(titleId);
-  if (!rows.length) return '';
-  return JSON.stringify(rows.map((r) => ({
+export function castArg(file) {
+  if (cfg.subsCharacters === false || !file) return '';
+  const pick = (rows) => rows.map((r) => ({
     name: r.name,
     display: r.display || r.name,
-    aliases: JSON.parse(r.aliases || '[]')
-  })));
+    aliases: JSON.parse(r.aliases || '[]'),
+    regular: !!r.regular
+  }));
+  let rows = [];
+  if (file.season != null && file.episode != null) {
+    rows = q.charactersForEpisode.all(file.title_id, file.season, file.episode);
+  }
+  if (!rows.length) rows = q.charactersForTitle.all(file.title_id);
+  if (!rows.length) return '';
+  return JSON.stringify(pick(rows));
 }
 
 export function runWhisper(videoPath, outPath, context = '', characters = '') {

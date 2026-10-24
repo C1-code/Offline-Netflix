@@ -70,6 +70,9 @@ const HONORIFICS = new Set([
 // naming prompt free of noise (and makes F1-style shows fall back cleanly).
 const NOT_A_CHARACTER = [
   /^(self|himself|herself|themself|narrator|host|hostess|interviewer|announcer|voice|additional voices?|various)$/i,
+  // Unnamed background roles: giving these a display name ("Coffee") only
+  // pollutes the naming prompt and steals a slot from a real character.
+  /^(student|girl|boy|man|woman|guy|nurse|waiter|waitress|bartender|guard|cop|driver|clerk|cashier|patron|customer|audience|crowd|teacher|professor|delivery guy|coffee delivery guy|pizza guy|security guard)$/i,
   /^board member\b/i,
   /\bhuman being\b/i,
   /#\d+$/,
@@ -177,6 +180,84 @@ export async function syncCharacters(t, { topN = 25 } = {}) {
   return stored;
 }
 
+/**
+ * Cast credited in one episode: the series regulars who appear plus that
+ * episode's guest stars. Cached in episode_characters so transcription stays
+ * offline. The whole-run cast misses one-episode characters (a guest professor,
+ * a defendant), and forcing the model to pick from it is what produced
+ * confidently wrong names like "Buzz Hickey" in season 1.
+ */
+export async function syncEpisodeCharacters(t, season, episode, { refresh = false } = {}) {
+  if (!t.tmdb_id || season == null || episode == null) return 0;
+  if (!refresh && q.countEpisodeCharacters.get(t.id, season, episode).n) {
+    return q.countEpisodeCharacters.get(t.id, season, episode).n;
+  }
+  const data = await get(`/tv/${t.tmdb_id}/season/${season}/episode/${episode}/credits`);
+
+  // Hand-edited names from title_characters win, and existing aliases are
+  // merged in (the episode credit often uses the long form of a character).
+  const series = new Map(q.charactersForTitle.all(t.id).map((c) => [c.name.toLowerCase(), c]));
+  const manual = new Map([...series.values()]
+    .filter((c) => c.source === 'manual')
+    .map((c) => [c.name.toLowerCase(), c]));
+
+  const people = [
+    ...(data.cast || []).map((p) => ({ p, regular: true })),
+    ...(data.guest_stars || []).map((p) => ({ p, regular: false }))
+  ];
+  const rows = new Map();
+  for (const { p, regular } of people) {
+    const parsed = parseCharacter(p.character || p.name, t.kind);
+    if (!parsed) continue;
+    const key = parsed.name.toLowerCase();
+    const seriesRow = series.get(key);
+    const manualRow = manual.get(key);
+    const aliases = new Set([
+      ...parsed.aliases,
+      ...JSON.parse((seriesRow && seriesRow.aliases) || '[]'),
+      ...JSON.parse((manualRow && manualRow.aliases) || '[]')
+    ]);
+    aliases.delete(parsed.display);
+    const prev = rows.get(key);
+    rows.set(key, {
+      title_id: t.id, season, episode,
+      name: parsed.name,
+      display: (manualRow && manualRow.display) || parsed.display,
+      aliases: JSON.stringify([...aliases]),
+      regular: ((prev && prev.regular) || regular) ? 1 : 0,
+      source: 'tmdb'
+    });
+  }
+  q.clearEpisodeCharacters.run(t.id, season, episode);
+  for (const r of rows.values()) q.upsertEpisodeCharacter.run(r);
+  return rows.size;
+}
+
+/** Fill episode_characters for every episodic file that has a TMDB id. */
+export async function syncAllEpisodeCharacters({ refresh = false, only = null } = {}) {
+  let titles = q.allTitles.all().filter((t) => t.kind === 'series' && t.tmdb_id);
+  if (only) titles = titles.filter((t) => t.name.toLowerCase().includes(only.toLowerCase()));
+  let episodes = 0, chars = 0, skipped = 0, fail = 0;
+  for (const t of titles) {
+    const eps = db.prepare(`SELECT DISTINCT season, episode FROM files
+      WHERE title_id=? AND kind='episode' AND season IS NOT NULL AND episode IS NOT NULL AND hidden=0
+      ORDER BY season, episode`).all(t.id);
+    for (const { season, episode } of eps) {
+      if (!refresh && q.countEpisodeCharacters.get(t.id, season, episode).n) { skipped++; continue; }
+      try {
+        const n = await syncEpisodeCharacters(t, season, episode, { refresh });
+        if (n) { episodes++; chars += n; }
+        else skipped++;
+      } catch (e) {
+        fail++;
+        console.log(`ERROR ${t.name} S${season}E${episode} — ${e.message}`);
+      }
+    }
+    console.log(`episode cast: ${t.name} — ${eps.length} episode(s)`);
+  }
+  return { episodes, chars, skipped, fail, titles: titles.length };
+}
+
 export async function syncSeries(t) {
   const search = await get('/search/tv', { query: t.name });
   const results = search.results || [];
@@ -210,6 +291,8 @@ export async function syncSeries(t) {
   }
   // Cast for speaker naming. Optional: a failure here must not fail the sync.
   try { await syncCharacters({ id: t.id, kind: 'series', tmdb_id: best.id }); } catch { /* no cast */ }
+  // Per-episode cast (regulars + guest stars) for accurate speaker naming.
+  try { await syncAllEpisodeCharacters({ only: t.name }); } catch { /* no episode credits */ }
   return true;
 }
 

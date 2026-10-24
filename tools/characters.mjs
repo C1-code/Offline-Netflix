@@ -9,12 +9,15 @@
 //   node tools/characters.mjs --list Succession
 //   node tools/characters.mjs --set Succession "Siobhan 'Shiv' Roy=Shiv"
 //   node tools/characters.mjs --top 40         # wider cast when syncing
+//   node tools/characters.mjs --episodes       # per-episode cast (regulars +
+//                                              guest stars) for every series
+//   node tools/characters.mjs --episodes Succession   # just one show
 //
 // --set stores source='manual' (survives --all refreshes). Setting the display
 // to the canonical name ("X=X") keeps the full name in cues.
 
 import { db, q } from '../src/db.js';
-import { syncAllCharacters } from '../src/tmdb.js';
+import { syncAllCharacters, syncAllEpisodeCharacters } from '../src/tmdb.js';
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
@@ -64,6 +67,18 @@ if (flag('--list')) {
   listCharacters(valueOf('--list'));
 } else if (flag('--set')) {
   setCharacter(valueOf('--set'), argv[argv.indexOf('--set') + 2]);
+} else if (flag('--episodes')) {
+  try {
+    const r = await syncAllEpisodeCharacters({
+      refresh: flag('--all'),
+      only: valueOf('--episodes')
+    });
+    console.log(`\nEpisode cast sync: ${r.episodes} episode(s) filled (${r.chars} rows), ` +
+      `${r.skipped} already had one, ${r.fail} failed, across ${r.titles} series.`);
+  } catch (e) {
+    console.error('\n' + e.message);
+    process.exit(1);
+  }
 } else {
   try {
     const r = await syncAllCharacters({ refresh: flag('--all'), topN });

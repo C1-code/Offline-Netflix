@@ -101,6 +101,10 @@ is also in this folder). The library loads at http://localhost:8420.
    `npm run chars:list` shows the derived on-screen names;
    `npm run chars -- --set "Community" "Ben Chang=Chang"` overrides one (hand
    edits stick across `chars:sync --all` refreshes).
+   Then `npm run chars:episodes` caches each **episode's** credited cast
+   (regulars + guest stars). Without it, a one-episode character like Professor
+   Whitman is not in the list at all and the model has to name them after
+   somebody from another season.
 
 ## How subtitles work
 
@@ -113,8 +117,10 @@ Priority per file:
    ~6 GB VRAM). Falls back to CPU automatically if no GPU is usable.
    Transcription alone runs at ~15–27× realtime, but the default pipeline also
    diarizes and names speakers, which puts the whole per-file cost at roughly
-   **3–5× realtime** (~5 min for a 21-min episode). Measured on real content:
-   245 h of media took ~77 h of wall time with the desktop in use.
+   **8–12× realtime** (~3 min for a 21-min episode) now that the naming model
+   is evicted between files (see the GPU note below). Measured: 245 h of media
+   took ~24 h of wall time with the desktop in use. An earlier pass over the
+   same library took ~77 h, before that hand-off was added.
 3. **Speaker-named cues** — every Whisper track is diarized (pyannote
    speaker-diarization-3.1, one-time free Hugging Face token) and the
    anonymous `SPEAKER_00` labels are resolved to character names by a local
@@ -122,25 +128,33 @@ Priority per file:
    Netflix's: `Cassian: I don't need saving.` Speakers the model can't name
    fall back to `SPEAKER 2:`. Any missing piece (no token, no Ollama) degrades
    to plain subtitles automatically.
-   Naming is **constrained to each title's cast** when one is cached
-   (`npm run chars:sync`, from TMDB credits): the model may only pick from that
-   list, answers are snapped to the closest character (`Ken` → `Kendall Roy`),
+   Naming is **constrained to each episode's cast** when one is cached
+   (`npm run chars:episodes`, from TMDB episode credits): regulars credited in
+   that episode plus its guest stars. The model may only pick from that list,
+   answers are snapped to the closest character (`Ken` → `Kendall Roy`),
    invented names are dropped, and one extra call retries the speakers still
    unnamed. A title with no cast on TMDB (documentaries) keeps the unconstrained
    behaviour. `subsCharacters: false` disables the constraint.
-   Naming trades coverage against confidence: by default the model must offer a
-   best match per speaker (more names, occasional wrong minor character);
-   `SUBS_NAMING_MODE=strict` only names speakers the dialogue identifies (fewer
-   names, higher precision). `SUBS_DEBUG_NAMING=1` prints the raw model answers,
-   token counts and the cast it was given — useful when a file comes out wrong.
+   Default `SUBS_NAMING_MODE=guarded` names regulars and anyone the scene
+   identifies, but refuses to invent a guest: a non-regular is only accepted
+   when this episode actually says their name (otherwise `SPEAKER n:`).
+   `strict` only names speakers the dialogue identifies (fewest names);
+   `best` is the old "everyone gets the closest cast match" behaviour that
+   produced confident nonsense like `Buzz Hickey` in season 1.
+   `SUBS_DEBUG_NAMING=1` prints the raw model answers, token counts, the cast
+   it was given and any guest guesses that were dropped — useful when a file
+   comes out wrong.
    To re-generate the whole library with named subs: `npm run subs:regen` then
    `npm run subs -- --whisper-only`. Add `--title Community` to do one show
    first (run again without the flag for the rest — done files are skipped);
    `--dry-run` prints what a pass would do.
-   To redo *only* the files whose naming fell back to `SPEAKER n:` —
-   e.g. after an Ollama/VRAM hiccup — `npm run subs:regen -- --unnamed`
-   (or `--label "English (AI)"`) resets just those tracks, and the next
-   `npm run subs -- --whisper-only` picks up those pending files only.
+   To redo *only* the files whose cues still contain `SPEAKER n:` — e.g. after
+   an Ollama/VRAM hiccup — `npm run subs:regen -- --unnamed` resets just those
+   tracks and the next `npm run subs -- --whisper-only` picks up those pending
+   files only. Because a track with *some* named speakers is already labeled
+   `English (AI, named)`, `--unnamed` checks the generated `.srt` for fallback
+   cues rather than matching a label; `--label "English (AI)"` remains an exact
+   label match for tracks that got no naming at all.
 
 Design decisions baked into the pipeline:
 
@@ -149,6 +163,34 @@ Design decisions baked into the pipeline:
   wrong content). If you still want them for other players, fine — the app
   ignores them. Leftovers from the migration are renamed `*.external-bak` and
   can be deleted.
+- **Keep quiet dialogue.** faster-whisper's default `no_speech_threshold` (0.6)
+  and `log_prob_threshold` (-1.0) discard whole segments of filtered or quiet
+  speech — a phone call in the pilot vanished completely. The pipeline runs
+  with 0.9 / -2.0 and a softer VAD (`threshold 0.2`, 600 ms padding), which
+  recovers those lines; the hallucination guard still drops repeated junk.
+- **One voice, one cluster.** pyannote sometimes splits one character across two
+  clusters (a quiet scene vs a loud one), which used to leave the protagonist
+  as `SPEAKER 12:` while a four-line cameo got a name. `transcribe.py` embeds
+  each cluster and merges near-identical voices (`SUBS_MERGE_SIM`, default
+  0.75), then lets self-introductions ("my name's Jeff") anchor the merged
+  cluster.
+- **Names need evidence.** `guarded` (the default) only keeps a proposed name
+  when the character is credited in this episode **and** their name is spoken
+  somewhere in it, or they introduce themselves. Everything else stays
+  `SPEAKER n:` — an honest label beats a confident wrong one. Set
+  `SUBS_NAMING_EVIDENCE=guests` for the old, wider coverage.
+- **Aligned word timings.** Whisper's attention-derived word times drift by a
+  few hundred milliseconds, enough to hand a short line to the previous
+  speaker. `transcribe.py` force-aligns the transcript with torchaudio's
+  Wav2Vec2 960h CTC model, so speaker changes land on the right word
+  (`--no-align` falls back to Whisper's own timings).
+- **Cue shape.** Cues are rebuilt from aligned words: split at speaker changes,
+  sentence ends, 84 characters or 7 seconds, then wrapped to at most two
+  42-character lines. No more 0.4-second `Shiv: What are you` /
+  `Kendall: doing?` fragments.
+- **Measure it.** `npm run subs:audit` reports, per title and optionally per
+  episode: fallback-label share, labels outside the episode cast, text overlap
+  with a reference `.external-bak` (when one exists), and cue fragmentation.
 - **Transcribe, don't translate.** Whisper's translate pass produces degenerate
   timestamps even on English audio (30-second text blocks, 1-second junk cues).
   `transcribe.py` transcribes in the source language and only re-runs with
@@ -161,6 +203,13 @@ Design decisions baked into the pipeline:
   the venv, off the loader path; `src/subtitles.js` points `LD_LIBRARY_PATH` at
   them per-spawn so ctranslate2 actually uses the GPU instead of silently
   falling back to CPU.
+- **One model on the GPU at a time.** Ollama keeps the naming model resident for
+  five minutes after a call, which does not fit alongside Whisper + pyannote on
+  a 12 GB card. `transcribe.py` asks Ollama to evict it (`keep_alive: 0`) before
+  transcription and again after naming, so a long pass does not degrade into
+  CPU-speed or failed files once the first episode is named. Per-file failures
+  are appended to `data/subs-errors.log`; the generated `.srt` is written as
+  `.part` and renamed into place, so a killed run never deletes what was there.
 - **On demand.** Files without any track get a "Generate with AI (Whisper)"
   button in the subs menu; the player auto-selects the fresh track when done.
 

@@ -94,6 +94,24 @@ CREATE TABLE IF NOT EXISTS title_characters (
   source   TEXT,                    -- tmdb | manual
   PRIMARY KEY (title_id, name)
 );
+
+-- Cast actually credited in one episode (regulars + guest stars), from TMDB
+-- episode credits. Speaker naming uses this instead of the whole-run cast:
+-- a one-episode guest like Professor Whitman must not compete with a regular
+-- from another season. The regular flag marks series regulars (safe to name
+-- even when the dialogue never says their name).
+CREATE TABLE IF NOT EXISTS episode_characters (
+  title_id INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+  season   INTEGER NOT NULL,
+  episode  INTEGER NOT NULL,
+  name     TEXT NOT NULL,
+  display  TEXT,
+  aliases  TEXT,
+  regular  INTEGER DEFAULT 0,
+  source   TEXT,
+  PRIMARY KEY (title_id, season, episode, name)
+);
+CREATE INDEX IF NOT EXISTS idx_episode_characters ON episode_characters(title_id, season, episode);
 `);
 
 // --- lightweight migrations (must run AFTER the tables exist — on a fresh
@@ -166,5 +184,17 @@ export const q = {
   upsertCharacter: db.prepare(`INSERT INTO title_characters (title_id, name, display, aliases, episodes, source)
     VALUES (@title_id,@name,@display,@aliases,@episodes,@source)
     ON CONFLICT(title_id,name) DO UPDATE SET display=excluded.display, aliases=excluded.aliases,
-      episodes=excluded.episodes, source=excluded.source`)
+      episodes=excluded.episodes, source=excluded.source`),
+
+  charactersForEpisode: db.prepare(`SELECT * FROM episode_characters
+    WHERE title_id = ? AND season = ? AND episode = ? ORDER BY regular DESC, name`),
+  countEpisodeCharacters: db.prepare(`SELECT COUNT(*) AS n FROM episode_characters
+    WHERE title_id = ? AND season = ? AND episode = ?`),
+  clearEpisodeCharacters: db.prepare(`DELETE FROM episode_characters
+    WHERE title_id = ? AND season = ? AND episode = ?`),
+  upsertEpisodeCharacter: db.prepare(`INSERT INTO episode_characters
+      (title_id, season, episode, name, display, aliases, regular, source)
+    VALUES (@title_id,@season,@episode,@name,@display,@aliases,@regular,@source)
+    ON CONFLICT(title_id,season,episode,name) DO UPDATE SET display=excluded.display,
+      aliases=excluded.aliases, regular=excluded.regular, source=excluded.source`)
 };

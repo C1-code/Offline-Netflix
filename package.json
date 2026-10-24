@@ -11,11 +11,13 @@
     "subs": "node tools/subs-all.mjs",
     "subs:regen": "node tools/subs-regen.mjs",
     "subs:prune": "node tools/prune-subs.mjs",
+    "subs:audit": "node tools/subs-audit.mjs",
     "rename:dry": "node tools/rename.mjs --dry-run",
     "rename:apply": "node tools/rename.mjs --apply",
     "tmdb:sync": "node tools/tmdb-sync.mjs",
     "chars": "node tools/characters.mjs",
     "chars:sync": "node tools/characters.mjs",
+    "chars:episodes": "node tools/characters.mjs --episodes",
     "chars:list": "node tools/characters.mjs --list",
     "thumbs": "node tools/thumbs.mjs"
   },
